@@ -118,9 +118,9 @@ function createVolumeModal(currentVolume = 100) {
 
     const input = new TextInputBuilder()
         .setCustomId('volume')
-        .setLabel('Volume (1-100)')
+        .setLabel('Volume (1-500)')
         .setStyle(TextInputStyle.Short)
-        .setPlaceholder(String(Math.min(100, Math.max(1, currentVolume || 100))))
+        .setPlaceholder(String(Math.min(500, Math.max(1, currentVolume || 500))))
         .setRequired(true)
         .setMaxLength(3);
 
