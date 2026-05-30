@@ -1,34 +1,4 @@
-<div align="center">
 
-![Logo](https://i.ibb.co/GfTxbJfC/7-edited.png)
-
-# 🎵 PrimeMusic - Advanced Lavalink Music Bot - 1.5.1
-
-![Version](https://img.shields.io/badge/version-1.5.1-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Node](https://img.shields.io/badge/node-%3E%3D16.0.0-brightgreen.svg)
-![Discord.js](https://img.shields.io/badge/discord.js-14.25.1-blue.svg)
-
-**A feature-rich, high-performance Discord music bot built with Lavalink and Discord.js v2 Components**
-
----
-
-### 🔗 Connect With Me
-
-[![YouTube](https://img.shields.io/badge/YouTube-GlaceYT-red?style=for-the-badge&logo=youtube)](https://youtube.com/@GlaceYT)
-[![Website](https://img.shields.io/badge/Website-GlaceYT.com-blue?style=for-the-badge&logo=google-chrome)](https://glaceyt.com)
-[![Replit](https://img.shields.io/badge/Replit-GlaceYT-orange?style=for-the-badge&logo=replit)](https://replit.com/@GlaceYT)
-[![Discord](https://img.shields.io/badge/Discord-Support%20Server-5865F2?style=for-the-badge&logo=discord)](https://discord.gg/xQF9f9yUEM)
-
----
-
-[Features](#-features) • [Installation](#-installation) • [Configuration](#-configuration) • [Usage](#-usage) • [Support](#-support)
-
-</div>
-
----
-
-- 💗 Credits to [UnquizableDev](https://github.com/UnquizableDev) for developing the song recommendation system and fully refactoring the playlist menu UI/UX.
 
 ## ✨ Features
 
@@ -75,49 +45,6 @@
 
 ---
 
-## 🚀 Installation
-
-### 1. Clone the Repository
-```bash
-git clone https://github.com/GlaceYT/PrimeMusic-Lavalink.git
-cd PrimeMusic-Lavalink
-```
-
-### 2. Install Dependencies
-```bash
-npm install
-```
-
-### 3. Configure Environment
-
-Create a `.env` file in the root directory:
-```env
-TOKEN=your_discord_bot_token_here
-```
-
-### 4. Configure `config.js`
-
-Edit `config.js` with your settings:
-
-```javascript
-module.exports = {
-  TOKEN: "", // Leave empty if using .env file
-  language: "en",
-  ownerID: ["your_user_id_here"],
-  mongodbUri: "your_mongodb_connection_string",
-  spotifyClientId: "your_spotify_client_id", // Optional
-  spotifyClientSecret: "your_spotify_client_secret", // Optional
-  nodes: [
-     {
-            name: "GlaceYT",
-            password: "glace",
-            host: "us-01.strixnodes.com",
-            port: 8003,
-            secure: false
-    }
-  ]
-}
-```
 
 ### 5. Enable Discord Intents
 
