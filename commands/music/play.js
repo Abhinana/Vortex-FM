@@ -1,7 +1,3 @@
-// ================================
-// RIFFY VOICE CONNECTION
-// ================================
-
 const voiceChannel = interaction.member?.voice?.channel;
 
 if (!voiceChannel) {
@@ -21,10 +17,8 @@ if (!nodeManager || !nodeManager.riffy) {
 const riffy = nodeManager.riffy;
 const guildId = interaction.guild.id;
 
-// Get existing player
 let player = riffy.players.get(guildId);
 
-// Create a NEW Riffy connection if one doesn't exist
 if (!player || player.destroyed) {
     try {
         player = riffy.createConnection({
@@ -39,15 +33,19 @@ if (!player || player.destroyed) {
         );
 
     } catch (error) {
-        console.error("[ RIFFY ] Failed to create voice connection:", error);
+        console.error(
+            "[ RIFFY ] Failed to create voice connection:",
+            error
+        );
 
         return interaction.editReply({
-            content: `❌ Failed to connect to the voice channel.\n\`${error.message}\``
+            content:
+                `❌ Failed to connect to the voice channel.\n` +
+                `\`${error.message}\``
         });
     }
 }
 
-// Make sure player is actually valid
 if (!player || player.destroyed) {
     return interaction.editReply({
         content: "❌ Riffy could not create the music player."
