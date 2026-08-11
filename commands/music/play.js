@@ -1,3 +1,7 @@
+// ================================
+// RIFFY VOICE CONNECTION
+// ================================
+
 const voiceChannel = interaction.member?.voice?.channel;
 
 if (!voiceChannel) {
@@ -16,6 +20,10 @@ if (!nodeManager || !nodeManager.riffy) {
 
 const riffy = nodeManager.riffy;
 const guildId = interaction.guild.id;
+
+// ================================
+// GET / CREATE PLAYER
+// ================================
 
 let player = riffy.players.get(guildId);
 
@@ -125,8 +133,12 @@ if (
 ) {
     try {
         await player.play();
+
     } catch (error) {
-        console.error("[ RIFFY ] Playback error:", error);
+        console.error(
+            "[ RIFFY ] Playback error:",
+            error
+        );
 
         return interaction.editReply({
             content:
