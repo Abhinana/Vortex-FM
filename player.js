@@ -1,13 +1,10 @@
-const { Riffy, Player } = require("riffy");
 const {
-    ContainerBuilder,
+    EmbedBuilder,
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
     AttachmentBuilder,
     PermissionsBitField,
-    MessageFlags,
-    MediaGalleryBuilder,
     ModalBuilder,
     TextInputBuilder,
     TextInputStyle,
@@ -21,16 +18,14 @@ const { getEmoji, getButtonEmoji } = require("./UI/emojis/emoji");
 const colors = require("./UI/colors/colors");
 const axios = require("axios");
 
-const { autoplayCollection, playlistCollection } = require("./mongodb.js");
 const {
-    initializeLavalinkManager,
-    getLavalinkManager
-} = require("./lavalink.js");
+    autoplayCollection,
+    playlistCollection
+} = require("./mongodb.js");
 
 const {
-    cardFromMessage,
-    safeDeferUpdate
-} = require("./utils/responseHandler.js");
+    initializeLavalinkManager
+} = require("./lavalink.js");
 
 let getLangSync, getLang;
 
@@ -40,32 +35,45 @@ try {
     getLang = langLoader.getLang;
 } catch (e) {
     getLangSync = () => ({ console: {} });
-    getLang = async () => ({ player: {} });
+    getLang = async () => ({ console: { player: {} } });
 }
+
+
+/* =========================================================
+   STORAGE
+========================================================= */
 
 const guildTrackMessages = new Map();
 const nowPlayingMessages = new Map();
 const progressUpdateIntervals = new Map();
 const guildActiveFilter = new Map();
-
-/*
- * IMPORTANT:
- * guildTrackMediaCache now stores ONLY the real Discord CDN URL.
- *
- * Do NOT store/use:
- * attachment://song-banner.png
- *
- * after the original message has been sent.
- */
 const guildTrackMediaCache = new Map();
 
 const musicCard = new EnhancedMusicCard();
 
 const useGeneratedSongCard = config.generateSongCard !== false;
-const enableVoiceChannelIdPatch =
-    config.enableVoiceChannelIdPatch === true;
 
-const voiceDebug = config.voiceDebug === true;
+const PLAYER_FAVORITES_NAME = "AutoFavourites";
+const LEGACY_PLAYER_FAVORITES_NAME = "**FAVORITES**";
+
+const PLAYER_FILTER_OPTIONS = [
+    { label: "Karaoke", value: "karaoke" },
+    { label: "Timescale", value: "timescale" },
+    { label: "Tremolo", value: "tremolo" },
+    { label: "Vibrato", value: "vibrato" },
+    { label: "3D", value: "rotation" },
+    { label: "Distortion", value: "distortion" },
+    { label: "Channel Mix", value: "channelmix" },
+    { label: "Low Pass", value: "lowpass" },
+    { label: "Bassboost", value: "bassboost" },
+    { label: "Nightcore", value: "nightcore" },
+    { label: "Daycore", value: "daycore" }
+];
+
+
+/* =========================================================
+   COMMAND MENTIONS
+========================================================= */
 
 const COMMAND_MENTION_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -94,9 +102,7 @@ async function getCommandMentionMap(client) {
                 map.set(cmd.name, cmd.id);
             }
         });
-    } catch (_) {
-        // Fallback to plain /command text
-    }
+    } catch (_) {}
 
     commandMentionCache = {
         expiresAt: now + COMMAND_MENTION_CACHE_TTL_MS,
@@ -128,43 +134,22 @@ function buildRandomTryHint(mentionMap) {
         "support"
     ];
 
-    const picks = [];
+    const shuffled = [...pool].sort(() => Math.random() - 0.5);
 
-    const shuffled = [...pool].sort(
-        () => Math.random() - 0.5
-    );
-
-    for (const cmd of shuffled) {
-        if (picks.length >= 3) break;
-        picks.push(cmd);
-    }
+    const picks = shuffled.slice(0, 3);
 
     const refs = [
         getCommandRef("help", mentionMap),
-        ...picks.map((cmd) =>
-            getCommandRef(cmd, mentionMap)
-        )
+        ...picks.map((cmd) => getCommandRef(cmd, mentionMap))
     ];
 
     return `${searchIcon} Try: ${refs.join(" • ")}`;
 }
 
-const PLAYER_FAVORITES_NAME = "AutoFavourites";
-const LEGACY_PLAYER_FAVORITES_NAME = "**FAVORITES**";
 
-const PLAYER_FILTER_OPTIONS = [
-    { label: "Karaoke", value: "karaoke" },
-    { label: "Timescale", value: "timescale" },
-    { label: "Tremolo", value: "tremolo" },
-    { label: "Vibrato", value: "vibrato" },
-    { label: "3D", value: "rotation" },
-    { label: "Distortion", value: "distortion" },
-    { label: "Channel Mix", value: "channelmix" },
-    { label: "Low Pass", value: "lowpass" },
-    { label: "Bassboost", value: "bassboost" },
-    { label: "Nightcore", value: "nightcore" },
-    { label: "Daycore", value: "daycore" }
-];
+/* =========================================================
+   MODALS
+========================================================= */
 
 function createAddSongModal() {
     const modal = new ModalBuilder()
@@ -175,9 +160,7 @@ function createAddSongModal() {
         .setCustomId("query")
         .setLabel("Song Name or URL")
         .setStyle(TextInputStyle.Short)
-        .setPlaceholder(
-            "e.g. Adele Skyfall or https://..."
-        )
+        .setPlaceholder("e.g. Adele Skyfall or https://...")
         .setRequired(true)
         .setMaxLength(200);
 
@@ -198,12 +181,7 @@ function createVolumeModal(currentVolume = 100) {
         .setLabel("Volume (1-100)")
         .setStyle(TextInputStyle.Short)
         .setPlaceholder(
-            String(
-                Math.min(
-                    100,
-                    Math.max(1, currentVolume || 100)
-                )
-            )
+            String(Math.min(100, Math.max(1, currentVolume || 100)))
         )
         .setRequired(true)
         .setMaxLength(3);
@@ -235,30 +213,26 @@ function createSaveSongModal() {
     return modal;
 }
 
+
+/* =========================================================
+   VOICE PATCH
+========================================================= */
+
 function patchVoiceChannelIdSupport(player) {
     const connection = player?.connection;
 
-    if (
-        !connection ||
-        connection.__voiceChannelIdPatchApplied
-    ) {
+    if (!connection || connection.__voiceChannelIdPatchApplied) {
         return;
     }
 
     connection.__voiceChannelIdPatchApplied = true;
     connection.voice = connection.voice || {};
 
-    if (
-        !connection.voice.channelId &&
-        player.voiceChannel
-    ) {
-        connection.voice.channelId =
-            player.voiceChannel;
+    if (!connection.voice.channelId && player.voiceChannel) {
+        connection.voice.channelId = player.voiceChannel;
     }
 
-    if (
-        typeof connection.setStateUpdate === "function"
-    ) {
+    if (typeof connection.setStateUpdate === "function") {
         const originalSetStateUpdate =
             connection.setStateUpdate.bind(connection);
 
@@ -274,23 +248,12 @@ function patchVoiceChannelIdSupport(player) {
             if (channelId) {
                 connection.voice.channelId = channelId;
             }
-
-            if (voiceDebug) {
-                console.log(
-                    `[ VOICE DEBUG ] stateUpdate guild=${player.guildId} channelId=${channelId || "null"} sessionId=${data?.session_id ? "yes" : "no"}`
-                );
-            }
         };
     }
 
-    if (
-        typeof connection.updatePlayerVoiceData ===
-        "function"
-    ) {
+    if (typeof connection.updatePlayerVoiceData === "function") {
         const originalUpdatePlayerVoiceData =
-            connection.updatePlayerVoiceData.bind(
-                connection
-            );
+            connection.updatePlayerVoiceData.bind(connection);
 
         connection.updatePlayerVoiceData = () => {
             if (!connection.voice.channelId) {
@@ -300,75 +263,35 @@ function patchVoiceChannelIdSupport(player) {
                     null;
             }
 
-            if (voiceDebug) {
-                const v = connection.voice || {};
-
-                console.log(
-                    `[ VOICE DEBUG ] updatePlayerVoiceData guild=${player.guildId} channelId=${v.channelId || "null"} sessionId=${v.sessionId ? "yes" : "no"} token=${v.token ? "yes" : "no"} endpoint=${v.endpoint ? "yes" : "no"}`
-                );
-            }
-
             originalUpdatePlayerVoiceData();
         };
     }
 }
 
-function stripMediaGallery(components = []) {
-    return components.filter(
-        (component) =>
-            !(component instanceof MediaGalleryBuilder)
-    );
-}
 
-function formatSourceName(sourceName) {
-    const raw = String(
-        sourceName || "Unknown"
-    ).toLowerCase();
+/* =========================================================
+   CACHE
+========================================================= */
 
-    if (raw === "youtube") return "YouTube";
-    if (raw === "soundcloud") return "SoundCloud";
-    if (raw === "spotify") return "Spotify";
-    if (raw === "applemusic") return "Apple Music";
-
-    return (
-        raw.charAt(0).toUpperCase() +
-        raw.slice(1)
-    );
-}
-
-/*
- * FIX:
- * Only save the actual Discord CDN media URL.
- */
 function setTrackMediaCache(
     guildId,
     trackUri,
-    mediaUrl = null
+    mediaUrl = null,
+    cardBuffer = null
 ) {
     if (!guildId || !trackUri) return;
 
-    if (
-        !mediaUrl ||
-        typeof mediaUrl !== "string" ||
-        mediaUrl.startsWith("attachment://")
-    ) {
-        return;
-    }
-
     guildTrackMediaCache.set(guildId, {
         trackUri,
-        mediaUrl
+        mediaUrl,
+        cardBuffer
     });
 }
 
 function getTrackMediaCache(guildId, trackUri) {
-    const cached =
-        guildTrackMediaCache.get(guildId);
+    const cached = guildTrackMediaCache.get(guildId);
 
-    if (
-        !cached ||
-        cached.trackUri !== trackUri
-    ) {
+    if (!cached || cached.trackUri !== trackUri) {
         return null;
     }
 
@@ -380,8 +303,7 @@ function clearTrackMediaCache(guildId) {
 }
 
 function clearProgressUpdates(guildId) {
-    const intervalId =
-        progressUpdateIntervals.get(guildId);
+    const intervalId = progressUpdateIntervals.get(guildId);
 
     if (intervalId) {
         clearInterval(intervalId);
@@ -389,468 +311,482 @@ function clearProgressUpdates(guildId) {
     }
 }
 
-function buildNowPlayingContainer(
+
+/* =========================================================
+   SOURCE
+========================================================= */
+
+function formatSourceName(sourceName) {
+    const raw = String(sourceName || "Unknown").toLowerCase();
+
+    if (raw === "youtube") return "YouTube";
+    if (raw === "soundcloud") return "SoundCloud";
+    if (raw === "spotify") return "Spotify";
+    if (raw === "applemusic") return "Apple Music";
+
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+
+/* =========================================================
+   DURATION
+========================================================= */
+
+function formatDuration(ms) {
+    if (!ms || ms < 0) {
+        return "0s";
+    }
+
+    const seconds = Math.floor((ms / 1000) % 60);
+    const minutes = Math.floor((ms / (1000 * 60)) % 60);
+    const hours = Math.floor((ms / (1000 * 60 * 60)) % 24);
+
+    return [
+        hours > 0 ? `${hours}h` : null,
+        minutes > 0 ? `${minutes}m` : null,
+        `${seconds}s`
+    ]
+        .filter(Boolean)
+        .join(" ");
+}
+
+
+/* =========================================================
+   PROGRESS BAR
+========================================================= */
+
+function createProgressBar(current, total, length = 20) {
+    current = Number(current) || 0;
+    total = Number(total) || 1;
+
+    const progressRatio = Math.max(
+        0,
+        Math.min(1, current / total)
+    );
+
+    const progress = Math.round(progressRatio * length);
+    const emptyProgress = Math.max(0, length - progress);
+
+    const progressText = "▬".repeat(progress);
+    const emptyProgressText = "─".repeat(emptyProgress);
+
+    const currentTime = formatDuration(current);
+    const totalTime = formatDuration(total);
+
+    return `\`${currentTime}\` ${progressText}🔘${emptyProgressText} \`${totalTime}\``;
+}
+
+
+/* =========================================================
+   NOW PLAYING EMBED
+========================================================= */
+
+function buildNowPlayingEmbed(
     track,
     requesterName,
     t,
     progressBar,
     progressPercent,
-    mediaUrl,
-    actionRows = {},
+    thumbnailUrl,
     playerState = {}
 ) {
-    const musicIcon =
-        getEmoji("music") || "🎵";
+    const musicIcon = getEmoji("music") || "🎵";
+    const playIcon = getEmoji("play") || "▶️";
+    const pauseIcon = getEmoji("pause") || "⏸️";
+    const queueIcon = getEmoji("queue") || "📄";
+    const userIcon = getEmoji("users") || "👤";
+    const sourceIcon = getEmoji("servers") || "🌐";
+    const timeIcon = getEmoji("uptime") || "⏱️";
 
-    const titleIcon =
-        getEmoji("music") || "🎧";
+    const isPaused = playerState.paused === true;
 
-    const infoIcon =
-        getEmoji("info") || "ℹ️";
+    const sourceName =
+        formatSourceName(track.info?.sourceName);
 
-    const timeIcon =
-        getEmoji("uptime") || "⏱️";
+    const title =
+        track.info?.title || "Unknown Title";
 
-    const queueIcon =
-        getEmoji("queue") || "📄";
+    const author =
+        track.info?.author || "Unknown Artist";
 
-    const userIcon =
-        getEmoji("users") || "👤";
+    const requester =
+        requesterName || "Unknown";
 
-    const sourceIcon =
-        getEmoji("servers") || "🌐";
+    const duration =
+        formatDuration(track.info?.length || 0);
 
-    const playIcon =
-        getEmoji("play") || "▶️";
+    const stateIcon =
+        isPaused ? pauseIcon : playIcon;
 
-    const pauseIcon =
-        getEmoji("pause") || "⏸️";
+    const stateText =
+        isPaused ? "Paused" : "Playing";
 
-    const loopIcon =
-        getEmoji("settings") || "🔁";
-
-    const controlsIcon =
-        getEmoji("settings") || "⚙️";
-
-    const manageIcon =
-        getEmoji("owner") || "👑";
-
-    const filterIcon =
-        getEmoji("servers") || "🌐";
-
-    const byText =
-        t.trackInfo?.by || "by";
-
-    const isPaused =
-        playerState.paused === true;
+    const queueLength =
+        playerState.queueLength || 0;
 
     const loopMode =
         playerState.loop || "none";
 
-    const isLoopOn =
-        loopMode !== "none";
+    let loopText = "Disabled";
 
-    const sourceName =
-        formatSourceName(
-            track.info?.sourceName
-        );
+    if (loopMode === "track") {
+        loopText = "Track";
+    } else if (loopMode === "queue") {
+        loopText = "Queue";
+    }
 
-    const stateLabel = isPaused
-        ? (
-            t.playerState?.paused ||
-            "Paused"
+    const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle(`${musicIcon} Now Playing`)
+        .setDescription(
+            `**${title}**\n` +
+            `> ${author}\n\n` +
+
+            `${stateIcon} **${stateText}**\n` +
+            `${timeIcon} **Duration:** ${duration}\n` +
+            `${userIcon} **Requested by:** ${requester}\n` +
+            `${sourceIcon} **Source:** ${sourceName}\n` +
+            `🔁 **Loop:** ${loopText}\n` +
+            `📋 **Queue:** ${queueLength} song${queueLength === 1 ? "" : "s"}`
         )
-        : (
-            t.playerState?.playing ||
-            "Playing"
-        );
+        .setFooter({
+            text: "Click the buttons below to control playback"
+        })
+        .setTimestamp();
 
-    const loopStateLabel = isLoopOn
-        ? (
-            t.playerState?.loopOn ||
-            "Loop On"
-        )
-        : (
-            t.playerState?.loopOff ||
-            "Loop Off"
-        );
-
-    const infoLine =
-        `${timeIcon} ${formatDuration(track.info.length)} • ` +
-        `${userIcon} ${requesterName || (t.trackInfo?.unknown || "Unknown")} • ` +
-        `${sourceIcon} ${sourceName}`;
-
-    const stateLine1 =
-        `${isPaused ? pauseIcon : playIcon} ${stateLabel}`;
-
-    const stateLine2 =
-        `${loopIcon} ${loopStateLabel}`;
-
-    const durationLine =
-        `${timeIcon} ${formatDuration(track.info.length)}`;
-
-    const requesterLine =
-        `${userIcon} ${requesterName || (t.trackInfo?.unknown || "Unknown")}`;
-
-    const sourceLine =
-        `${sourceIcon} ${sourceName}`;
-
-    const queueHint =
-        `${queueIcon} ${playerState.queueLength || 0} ${
-            playerState.queueLength === 1
-                ? "song"
-                : "songs"
-        } in queue`;
-
-    const tryHint =
-        buildRandomTryHint(
-            playerState.commandMentionMap
-        );
-
-    const showTitleBlock = !mediaUrl;
-
-    const container =
-        new ContainerBuilder();
-
-    /*
-     * IMPORTANT:
-     * mediaUrl must be the actual Discord CDN URL.
-     *
-     * NEVER pass attachment://song-banner.png
-     * here during message edits.
-     */
-    if (mediaUrl) {
-        const mediaGallery =
-            new MediaGalleryBuilder().addItems(
-                (mediaItem) =>
-                    mediaItem
-                        .setURL(mediaUrl)
-                        .setDescription(
-                            `${track.info?.title || "Unknown Title"} - ${track.info?.author || "Unknown Artist"}`
-                        )
-            );
-
-        container
-            .addSeparatorComponents(
-                (separator) => separator
-            )
-            .addMediaGalleryComponents(
-                mediaGallery
-            );
+    if (thumbnailUrl && /^https?:\/\//i.test(thumbnailUrl)) {
+        embed.setThumbnail(thumbnailUrl);
     }
 
-    if (showTitleBlock) {
-        container.addTextDisplayComponents(
-            (textDisplay) =>
-                textDisplay.setContent(
-                    `### ${titleIcon} ${track.info.title || "Unknown Title"}\n` +
-                    `${byText} ${track.info.author || (t.trackInfo?.unknownArtist || "Unknown Artist")}`
-                )
-        );
+    if (progressBar && config.showProgressBar !== false) {
+        embed.addFields({
+            name: "Progress",
+            value: progressBar,
+            inline: false
+        });
     }
 
-    const showSongDetails =
-        !mediaUrl ||
-        config.metadataTag === true;
-
-    if (showSongDetails) {
-        container
-            .addSeparatorComponents(
-                (separator) => separator
-            )
-            .addTextDisplayComponents(
-                (textDisplay) =>
-                    textDisplay.setContent(
-                        `### ${infoIcon} ${t.songDetailsTitle || "Song Details"}\n` +
-                        `${stateLine1}\n` +
-                        `${stateLine2}\n` +
-                        `${durationLine}\n` +
-                        `${requesterLine}\n` +
-                        `${sourceLine}\n` +
-                        `${queueHint}`
-                    )
-            );
+    if (
+        typeof progressPercent === "number" &&
+        progressPercent >= 0
+    ) {
+        embed.addFields({
+            name: "Progress",
+            value: `${Math.min(100, Math.max(0, progressPercent))}%`,
+            inline: false
+        });
     }
 
-    if (actionRows?.playbackRow) {
-        container
-            .addSeparatorComponents(
-                (separator) => separator
-            )
-            .addTextDisplayComponents(
-                (textDisplay) =>
-                    textDisplay.setContent(
-                        `### ${controlsIcon} Playback`
-                    )
-            )
-            .addActionRowComponents(
-                actionRows.playbackRow
-            );
-    }
-
-    if (actionRows?.manageRow) {
-        container
-            .addSeparatorComponents(
-                (separator) => separator
-            )
-            .addTextDisplayComponents(
-                (textDisplay) =>
-                    textDisplay.setContent(
-                        `### ${manageIcon} Library`
-                    )
-            )
-            .addActionRowComponents(
-                actionRows.manageRow
-            );
-    }
-
-    if (actionRows?.filterRow) {
-        container
-            .addSeparatorComponents(
-                (separator) => separator
-            )
-            .addTextDisplayComponents(
-                (textDisplay) =>
-                    textDisplay.setContent(
-                        `### ${filterIcon} Effects`
-                    )
-            )
-            .addActionRowComponents(
-                actionRows.filterRow
-            );
-    }
-
-    container
-        .addSeparatorComponents(
-            (separator) => separator
-        )
-        .addTextDisplayComponents(
-            (textDisplay) =>
-                textDisplay.setContent(
-                    tryHint
-                )
-        );
-
-    return container;
+    return embed;
 }
 
-async function sendMessageWithPermissionsCheck(
+
+/* =========================================================
+   PLAYER BUTTONS
+========================================================= */
+
+function createPlaybackActionRow(
+    disabled = false,
+    paused = false,
+    loopMode = "none"
+) {
+    const playEmoji =
+        getButtonEmoji("play") || "▶️";
+
+    const pauseEmoji =
+        getButtonEmoji("pause") || "⏸️";
+
+    const skipEmoji =
+        getButtonEmoji("next") || "⏭️";
+
+    const volumeEmoji =
+        getButtonEmoji("volume") || "🔊";
+
+    const loopEmoji =
+        getButtonEmoji("settings") || "🔁";
+
+    const stopEmoji =
+        getButtonEmoji("stop") || "⏹️";
+
+    const playbackEmoji =
+        paused ? playEmoji : pauseEmoji;
+
+    const playbackLabel =
+        paused ? "Play" : "Pause";
+
+    const loopEnabled =
+        loopMode !== "none";
+
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId("togglePlayback")
+            .setEmoji(playbackEmoji)
+            .setLabel(playbackLabel)
+            .setStyle(
+                paused
+                    ? ButtonStyle.Success
+                    : ButtonStyle.Secondary
+            )
+            .setDisabled(disabled),
+
+        new ButtonBuilder()
+            .setCustomId("skipTrack")
+            .setEmoji(skipEmoji)
+            .setLabel("Skip")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled),
+
+        new ButtonBuilder()
+            .setCustomId("player_volume")
+            .setEmoji(volumeEmoji)
+            .setLabel("Volume")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled),
+
+        new ButtonBuilder()
+            .setCustomId("loopToggle")
+            .setEmoji(loopEmoji)
+            .setLabel("Loop")
+            .setStyle(
+                loopEnabled
+                    ? ButtonStyle.Success
+                    : ButtonStyle.Secondary
+            )
+            .setDisabled(disabled),
+
+        new ButtonBuilder()
+            .setCustomId("stopTrack")
+            .setEmoji(stopEmoji)
+            .setLabel("Stop")
+            .setStyle(ButtonStyle.Danger)
+            .setDisabled(disabled)
+    );
+}
+
+
+function createManageSongActionRow(disabled = false) {
+    const favoriteEmoji =
+        getButtonEmoji("welcome") || "⭐";
+
+    const addEmoji =
+        getButtonEmoji("play") || "➕";
+
+    const queueEmoji =
+        getButtonEmoji("queue") || "📄";
+
+    const saveEmoji =
+        getButtonEmoji("folder") || "💾";
+
+    const shuffleEmoji =
+        getButtonEmoji("servers") || "🔀";
+
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId("player_favorite")
+            .setEmoji(favoriteEmoji)
+            .setLabel("Favorite")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled),
+
+        new ButtonBuilder()
+            .setCustomId("player_add_song")
+            .setEmoji(addEmoji)
+            .setLabel("Add")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled),
+
+        new ButtonBuilder()
+            .setCustomId("player_queue")
+            .setEmoji(queueEmoji)
+            .setLabel("Queue")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled),
+
+        new ButtonBuilder()
+            .setCustomId("player_save_song")
+            .setEmoji(saveEmoji)
+            .setLabel("Save")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled),
+
+        new ButtonBuilder()
+            .setCustomId("player_shuffle")
+            .setEmoji(shuffleEmoji)
+            .setLabel("Shuffle")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled)
+    );
+}
+
+
+function createFilterRow(
+    disabled = false,
+    activeFilter = null
+) {
+    const select = new StringSelectMenuBuilder()
+        .setCustomId("player_filter_select")
+        .setPlaceholder(
+            activeFilter
+                ? `Filter: ${activeFilter}`
+                : "Select audio filter"
+        )
+        .setDisabled(disabled)
+        .addOptions([
+            {
+                label: "Clear Filters",
+                value: "__clear__",
+                default: !activeFilter
+            },
+            ...PLAYER_FILTER_OPTIONS.map((item) => ({
+                label: item.label,
+                value: item.value,
+                default: item.value === activeFilter
+            }))
+        ]);
+
+    return new ActionRowBuilder().addComponents(select);
+}
+
+
+function buildPlayerActionRows(
+    paused,
+    loopMode,
+    activeFilter
+) {
+    return {
+        playbackRow: createPlaybackActionRow(
+            false,
+            paused,
+            loopMode
+        ),
+
+        manageRow: createManageSongActionRow(false),
+
+        filterRow: createFilterRow(
+            false,
+            activeFilter
+        )
+    };
+}
+
+
+/* =========================================================
+   SEND PLAYER MESSAGE
+========================================================= */
+
+async function sendPlayerMessage(
     channel,
-    components,
-    attachment
+    embed,
+    actionRows = [],
+    attachment = null
 ) {
     try {
-        const permissions =
-            channel.permissionsFor(
-                channel.guild.members.me
-            );
+        const me =
+            channel.guild?.members?.me;
 
-        const needsAttachPermission =
-            !!attachment;
+        const permissions =
+            me
+                ? channel.permissionsFor(me)
+                : null;
 
         if (
+            permissions &&
             !permissions.has(
                 PermissionsBitField.Flags.SendMessages
-            ) ||
+            )
+        ) {
+            console.error(
+                "Bot does not have Send Messages permission."
+            );
+            return null;
+        }
+
+        if (
+            permissions &&
             !permissions.has(
                 PermissionsBitField.Flags.EmbedLinks
             )
         ) {
-            const lang =
-                getLangSync();
-
             console.error(
-                lang.console?.player?.lacksPermissions ||
-                "Bot lacks necessary permissions to send messages in this channel."
+                "Bot does not have Embed Links permission."
             );
-
-            return;
+            return null;
         }
 
-        let safeComponents =
-            components;
-
-        let safeAttachment =
-            attachment;
+        const payload = {
+            embeds: [embed],
+            components: actionRows
+        };
 
         if (
-            needsAttachPermission &&
-            !permissions.has(
+            attachment &&
+            permissions?.has(
                 PermissionsBitField.Flags.AttachFiles
             )
         ) {
-            safeComponents =
-                stripMediaGallery(
-                    components
-                );
-
-            safeAttachment = null;
+            payload.files = [attachment];
         }
 
-        const messageOptions = {
-            components:
-                safeComponents,
-            flags:
-                MessageFlags.IsComponentsV2
-        };
+        return await channel.send(payload);
 
-        if (safeAttachment) {
-            messageOptions.files = [
-                safeAttachment
-            ];
-        }
-
-        try {
-            return await channel.send(
-                messageOptions
-            );
-        } catch (sendError) {
-            console.error(
-                "[ PLAYER ] Initial message send failed:",
-                sendError.message
-            );
-
-            /*
-             * FALLBACK:
-             * Remove the media gallery completely.
-             */
-            const fallbackComponents =
-                stripMediaGallery(
-                    components
-                );
-
-            const fallbackOptions = {
-                components:
-                    fallbackComponents,
-                flags:
-                    MessageFlags.IsComponentsV2
-            };
-
-            try {
-                return await channel.send(
-                    fallbackOptions
-                );
-            } catch (_) {
-                return null;
-            }
-        }
     } catch (error) {
-        const langSync =
-            getLangSync();
-
         console.error(
-            langSync.console?.player?.errorSendingMessage?.replace(
-                "{message}",
-                error.message
-            ) ||
-            "Error sending message:",
-            error.message
+            "Error sending player message:",
+            error
         );
 
-        return null;
+        try {
+            return await channel.send({
+                content:
+                    "⚠️ Unable to display the music player.",
+                components: actionRows
+            });
+        } catch (_) {
+            return null;
+        }
     }
 }
 
-async function sendTransientCard(
-    channel,
-    message,
-    deleteMs = 5000,
-    fallbackTitle = "Notice"
-) {
-    const container =
-        cardFromMessage(
-            message,
-            fallbackTitle
-        );
 
-    const sent =
-        await channel.send({
-            components: [
-                container
-            ],
-            flags:
-                MessageFlags.IsComponentsV2
-        });
-
-    setTimeout(
-        () =>
-            sent.delete().catch(() => {}),
-        deleteMs
-    );
-
-    return sent;
-}
+/* =========================================================
+   INITIALIZE PLAYER
+========================================================= */
 
 async function initializePlayer(client) {
     const nodeManager =
-        await initializeLavalinkManager(
-            client
-        );
+        await initializeLavalinkManager(client);
 
-    client.riffy =
-        nodeManager.riffy;
+    client.riffy = nodeManager.riffy;
+    client.lavalinkManager = nodeManager;
+    client.nodeManager = nodeManager;
 
-    client.lavalinkManager =
-        nodeManager;
 
-    client.nodeManager =
-        nodeManager;
+    /* =====================================================
+       PLAYER CREATE
+    ===================================================== */
 
     client.riffy.on(
         "playerCreate",
         (player) => {
-            if (enableVoiceChannelIdPatch) {
-                patchVoiceChannelIdSupport(
-                    player
-                );
-            }
-
-            if (voiceDebug) {
-                console.log(
-                    `[ VOICE DEBUG ] playerCreate guild=${player.guildId} voiceChannel=${player.voiceChannel || "null"} patch=${enableVoiceChannelIdPatch ? "on" : "off"}`
-                );
-            }
+            patchVoiceChannelIdSupport(player);
         }
     );
+
+
+    /* =====================================================
+       TRACK EXCEPTION
+    ===================================================== */
 
     client.riffy.on(
         "trackException",
         async (player, error) => {
-            const langSync =
-                getLangSync();
-
             const errorMsg =
                 error?.message ||
                 "Unknown error";
 
-            const isTimeout =
-                errorMsg.includes(
-                    "timeout"
-                ) ||
-                errorMsg.includes(
-                    "Read timed out"
-                ) ||
-                errorMsg.includes(
-                    "SocketTimeoutException"
-                );
-
-            if (isTimeout) {
-                console.warn(
-                    `${colors.cyan}[ LAVALINK ]${colors.reset} ${colors.yellow}Track timeout for guild ${player?.guildId || "unknown"}: ${errorMsg}${colors.reset}`
-                );
-            } else {
-                console.error(
-                    `${colors.cyan}[ LAVALINK ]${colors.reset} ${colors.red}${langSync.console?.player?.trackException?.replace(
-                        "{guildId}",
-                        player?.guildId ||
-                        "unknown"
-                    ).replace(
-                        "{message}",
-                        errorMsg
-                    ) ||
-                    `Track Exception for guild ${player?.guildId || "unknown"}: ${errorMsg}`}${colors.reset}`
-                );
-            }
+            console.error(
+                `[ LAVALINK ] Track Exception for guild ${player?.guildId}: ${errorMsg}`
+            );
 
             const channel =
                 client.channels.cache.get(
@@ -858,56 +794,25 @@ async function initializePlayer(client) {
                 );
 
             if (channel) {
-                const lang =
-                    await getLang(
-                        player.guildId
-                    ).catch(
-                        () => ({
-                            console: {
-                                player: {}
-                            }
-                        })
-                    );
+                const embed =
+                    new EmbedBuilder()
+                        .setColor(0xED4245)
+                        .setTitle("⚠️ Track Error")
+                        .setDescription(
+                            "Failed to load the current track.\n\n" +
+                            "Skipping to the next song..."
+                        );
 
-                const t =
-                    lang.console?.player ||
-                    {};
-
-                let errorMessage =
-                    t.trackError?.message ||
-                    "Failed to load the track.";
-
-                if (isTimeout) {
-                    errorMessage =
-                        t.trackError?.timeoutMessage ||
-                        "Connection timeout while loading track. This is usually a network issue on the Lavalink server.";
-                }
-
-                const trackErrorCard =
-                    cardFromMessage(
-                        `${t.trackError?.title || "## ⚠️ Track Error"}\n\n` +
-                        `${errorMessage}\n` +
-                        `${t.trackError?.skipping || "Skipping to next song..."}`,
-                        "Track Error"
-                    );
-
-                channel.send({
-                    components: [
-                        trackErrorCard
-                    ],
-                    flags:
-                        MessageFlags.IsComponentsV2
+                await channel.send({
+                    embeds: [embed]
                 })
-                    .catch(() => {})
                     .then((msg) => {
-                        if (msg) {
-                            setTimeout(
-                                () =>
-                                    msg.delete().catch(() => {}),
-                                5000
-                            );
-                        }
-                    });
+                        setTimeout(
+                            () => msg.delete().catch(() => {}),
+                            5000
+                        );
+                    })
+                    .catch(() => {});
             }
 
             if (
@@ -920,46 +825,19 @@ async function initializePlayer(client) {
             }
         }
     );
+
+
+    /* =====================================================
+       TRACK STUCK
+    ===================================================== */
 
     client.riffy.on(
         "trackStuck",
         (player, error) => {
-            const lang =
-                getLangSync();
-
-            const errorMsg =
-                error?.message ||
-                "Unknown error";
-
-            if (
-                errorMsg.includes(
-                    "Connect Timeout"
-                ) ||
-                errorMsg.includes(
-                    "fetch failed"
-                ) ||
-                errorMsg.includes(
-                    "timeout"
-                )
-            ) {
-                console.warn(
-                    `${colors.cyan}[ LAVALINK ]${colors.reset} ${colors.yellow}Track stuck due to connection timeout for guild ${player?.guildId || "unknown"} - will retry${colors.reset}`
-                );
-            } else {
-                console.error(
-                    `${colors.cyan}[ LAVALINK ]${colors.reset} ${colors.red}${
-                        lang.console?.player?.trackStuck?.replace(
-                            "{guildId}",
-                            player?.guildId ||
-                            "unknown"
-                        ).replace(
-                            "{message}",
-                            errorMsg
-                        ) ||
-                        `Track Stuck for guild ${player?.guildId || "unknown"}: ${errorMsg}`
-                    }${colors.reset}`
-                );
-            }
+            console.warn(
+                `[ LAVALINK ] Track stuck in guild ${player?.guildId}:`,
+                error?.message || "Unknown error"
+            );
 
             if (
                 player &&
@@ -972,35 +850,24 @@ async function initializePlayer(client) {
         }
     );
 
+
+    /* =====================================================
+       TRACK START
+    ===================================================== */
+
     client.riffy.on(
         "trackStart",
         async (player, track) => {
+
             if (
                 !track ||
                 !track.info
             ) {
-                const lang =
-                    getLangSync();
-
-                console.error(
-                    `[ LAVALINK ] ${
-                        lang.console?.player?.trackNull?.replace(
-                            "{guildId}",
-                            player.guildId
-                        ) ||
-                        `Track is null or missing info for guild ${player.guildId} - ignoring event`
-                    }`
-                );
-
                 return;
             }
 
             await new Promise(
-                (resolve) =>
-                    setTimeout(
-                        resolve,
-                        200
-                    )
+                resolve => setTimeout(resolve, 200)
             );
 
             const currentPlayer =
@@ -1016,16 +883,8 @@ async function initializePlayer(client) {
                 return;
             }
 
-            if (
-                client.statusManager &&
-                track.info.title
-            ) {
-                await client.statusManager
-                    .onTrackStart(
-                        player.guildId
-                    )
-                    .catch(() => {});
-            }
+            const guildId =
+                player.guildId;
 
             const channel =
                 client.channels.cache.get(
@@ -1033,33 +892,13 @@ async function initializePlayer(client) {
                 );
 
             if (!channel) {
-                console.error(
-                    `[ LAVALINK ] Channel not found for guild ${player.guildId}`
-                );
                 return;
             }
 
-            const guildId =
-                player.guildId;
 
-            const trackUri =
-                track.info.uri;
-
-            const requester =
-                requesters.get(
-                    trackUri
-                );
-
-            const lang =
-                await getLang(
-                    guildId
-                ).catch(() =>
-                    getLangSync()
-                );
-
-            const t =
-                lang.console?.player ||
-                {};
+            /* =============================================
+               HISTORY
+            ============================================= */
 
             try {
                 await playlistCollection.updateOne(
@@ -1071,296 +910,324 @@ async function initializePlayer(client) {
                         $push: {
                             songs: {
                                 $each: [
-                                    trackUri
+                                    track.info.uri
                                 ],
                                 $slice: -100
                             }
+                        },
+                        $setOnInsert: {
+                            guildId,
+                            name: "__HISTORY__"
                         }
                     },
                     {
                         upsert: true
                     }
                 );
-            } catch (error) {
-                console.error(
-                    "Error saving to history:",
-                    error
-                );
+            } catch (_) {}
+
+
+            /* =============================================
+               REMOVE PREVIOUS PLAYER
+            ============================================= */
+
+            await cleanupPreviousTrackMessages(
+                channel,
+                guildId
+            );
+
+            clearProgressUpdates(guildId);
+
+
+            /* =============================================
+               REQUESTER
+            ============================================= */
+
+            const requester =
+                requesters.get(
+                    track.info.uri
+                ) ||
+                track.info.requester ||
+                "Unknown";
+
+
+            /* =============================================
+               THUMBNAIL
+            ============================================= */
+
+            let thumbnailURL =
+                track.info.thumbnail ||
+                null;
+
+            const trackURI =
+                track.info.uri ||
+                "";
+
+
+            /* =============================================
+               TRY YOUTUBE THUMBNAIL
+            ============================================= */
+
+            if (
+                !thumbnailURL &&
+                trackURI
+            ) {
+                const youtubeMatch =
+                    trackURI.match(
+                        /(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&?/]+)/
+                    );
+
+                if (youtubeMatch) {
+                    thumbnailURL =
+                        `https://img.youtube.com/vi/${youtubeMatch[1]}/hqdefault.jpg`;
+                }
             }
 
-            try {
-                await cleanupPreviousTrackMessages(
-                    channel,
-                    guildId
-                );
 
-                await new Promise(
-                    (resolve) =>
-                        setTimeout(
-                            resolve,
-                            500
-                        )
-                );
+            /* =============================================
+               GENERATED CARD
+            ============================================= */
 
-                const canAttachFiles =
-                    channel
-                        .permissionsFor(
-                            channel.guild.members.me
-                        )
-                        ?.has(
-                            PermissionsBitField.Flags.AttachFiles
-                        );
+            let attachment = null;
+            let cardBuffer = null;
 
-                let attachment =
-                    null;
+            if (useGeneratedSongCard) {
+                try {
+                    const generated =
+                        await musicCard.generateCard({
+                            thumbnailURL:
+                                thumbnailURL || trackURI,
 
-                if (
-                    useGeneratedSongCard
-                ) {
-                    let thumbnailURL =
-                        track.info.thumbnail ||
-                        "";
+                            trackURI,
 
-                    const currentTrackUri =
-                        track.info.uri ||
-                        "";
+                            songTitle:
+                                track.info.title,
+
+                            songArtist:
+                                track.info.author ||
+                                "Unknown Artist",
+
+                            trackRequester:
+                                requester,
+
+                            isPlaying: true,
+
+                            showVisualizer:
+                                config.showVisualizer !== false,
+
+                            currentPositionMs: 0,
+
+                            totalDurationMs:
+                                track.info.length || 0
+                        });
 
                     if (
-                        (
-                            !thumbnailURL ||
-                            !thumbnailURL.startsWith(
-                                "http"
-                            )
-                        ) &&
-                        currentTrackUri
+                        generated &&
+                        generated.length > 0
                     ) {
-                        thumbnailURL =
-                            currentTrackUri;
-                    }
+                        cardBuffer = generated;
 
-                    try {
-                        const cardBuffer =
-                            await musicCard.generateCard(
+                        attachment =
+                            new AttachmentBuilder(
+                                generated,
                                 {
-                                    thumbnailURL,
-                                    trackURI:
-                                        currentTrackUri,
-                                    songTitle:
-                                        track.info.title,
-                                    songArtist:
-                                        track.info.author ||
-                                        "Unknown Artist",
-                                    trackRequester:
-                                        requester,
-                                    isPlaying:
-                                        true,
-                                    showVisualizer:
-                                        config.showVisualizer !==
-                                        false,
-                                    currentPositionMs:
-                                        0,
-                                    totalDurationMs:
-                                        track.info.length ||
-                                        0
+                                    name:
+                                        "song-banner.png"
                                 }
                             );
-
-                        if (
-                            cardBuffer &&
-                            cardBuffer.length > 0
-                        ) {
-                            attachment =
-                                new AttachmentBuilder(
-                                    cardBuffer,
-                                    {
-                                        name:
-                                            "song-banner.png"
-                                    }
-                                );
-                        }
-                    } catch (error) {
-                        console.warn(
-                            `Music card render failed: ${error.message}`
-                        );
                     }
+                } catch (error) {
+                    console.warn(
+                        "Music card generation failed:",
+                        error.message
+                    );
                 }
+            }
 
-                const commandMentionMap =
-                    await getCommandMentionMap(
-                        client
-                    );
 
-                const actionRows =
-                    buildPlayerActionRows(
-                        player.paused,
-                        player.loop,
-                        guildActiveFilter.get(
-                            guildId
-                        ) || null
-                    );
+            /* =============================================
+               EMBED
+            ============================================= */
 
-                /*
-                 * IMPORTANT:
-                 *
-                 * Initial message may use:
-                 * attachment://song-banner.png
-                 *
-                 * because the attachment is being
-                 * uploaded in THIS same request.
-                 */
-                const initialMediaUrl =
-                    attachment &&
-                    canAttachFiles
-                        ? "attachment://song-banner.png"
-                        : null;
+            const lang =
+                await getLang(guildId)
+                    .catch(() => ({
+                        console: {
+                            player: {}
+                        }
+                    }));
 
-                const nowPlayingContainer =
-                    buildNowPlayingContainer(
-                        track,
-                        requester,
-                        t,
-                        config.showProgressBar !==
-                            false
-                            ? createProgressBar(
-                                0,
-                                track.info.length
-                            )
-                            : null,
+            const t =
+                lang.console?.player || {};
+
+            const progressBar =
+                config.showProgressBar !== false
+                    ? createProgressBar(
                         0,
-                        initialMediaUrl,
-                        actionRows,
-                        {
-                            paused:
-                                player.paused,
-                            loop:
-                                player.loop,
-                            currentPosition:
-                                0,
-                            queueLength:
-                                player.queue.length,
-                            commandMentionMap
-                        }
-                    );
-
-                const components = [
-                    nowPlayingContainer
-                ];
-
-                const message =
-                    await sendMessageWithPermissionsCheck(
-                        channel,
-                        components,
-                        canAttachFiles
-                            ? attachment
-                            : null
-                    );
-
-                if (!message) {
-                    console.error(
-                        `Failed to send player message for guild ${guildId}`
-                    );
-                    return;
-                }
-
-                /*
-                 * CRITICAL FIX:
-                 *
-                 * Discord gives the uploaded attachment
-                 * a real CDN URL.
-                 *
-                 * We store THAT URL.
-                 *
-                 * We do NOT store:
-                 * attachment://song-banner.png
-                 */
-                const sentAttachment =
-                    message.attachments?.first();
-
-                const sentMediaUrl =
-                    sentAttachment?.url ||
-                    null;
-
-                if (
-                    sentMediaUrl &&
-                    !sentMediaUrl.startsWith(
-                        "attachment://"
+                        track.info.length || 1
                     )
-                ) {
-                    setTrackMediaCache(
-                        guildId,
-                        track.info.uri,
-                        sentMediaUrl
-                    );
-                } else {
-                    clearTrackMediaCache(
-                        guildId
-                    );
-                }
+                    : null;
 
-                if (
-                    !guildTrackMessages.has(
-                        guildId
-                    )
-                ) {
-                    guildTrackMessages.set(
-                        guildId,
-                        []
-                    );
-                }
 
-                guildTrackMessages
-                    .get(guildId)
-                    .push({
-                        messageId:
-                            message.id,
-                        channelId:
-                            channel.id,
-                        type: "track"
-                    });
+            /*
+             * IMPORTANT:
+             *
+             * We use the normal HTTPS thumbnail
+             * here instead of attachment://
+             *
+             * This completely avoids the previous
+             * Components V2 attachment error.
+             */
 
-                nowPlayingMessages.set(
-                    guildId,
+            const embed =
+                buildNowPlayingEmbed(
+                    track,
+                    requester,
+                    t,
+                    progressBar,
+                    0,
+                    thumbnailURL,
                     {
-                        messageId:
-                            message.id,
-                        channelId:
-                            channel.id,
-                        player,
-                        trackUri:
-                            track.info.uri
+                        paused:
+                            player.paused,
+
+                        loop:
+                            player.loop,
+
+                        queueLength:
+                            player.queue.length
                     }
                 );
 
-                const intervalId =
-                    await startProgressUpdates(
-                        client,
-                        guildId,
-                        message,
-                        player,
-                        track
-                    );
 
-                if (intervalId) {
-                    progressUpdateIntervals.set(
-                        guildId,
-                        intervalId
-                    );
-                }
+            /* =============================================
+               BUTTONS
+            ============================================= */
 
-                setupCollector(
-                    client,
-                    player,
-                    channel,
-                    message
+            const actionRows =
+                buildPlayerActionRows(
+                    player.paused,
+                    player.loop,
+                    guildActiveFilter.get(
+                        guildId
+                    ) || null
                 );
-            } catch (error) {
+
+
+            /* =============================================
+               SEND
+            ============================================= */
+
+            const message =
+                await sendPlayerMessage(
+                    channel,
+                    embed,
+                    [
+                        actionRows.playbackRow,
+                        actionRows.manageRow,
+                        actionRows.filterRow
+                    ]
+                );
+
+            if (!message) {
                 console.error(
-                    "Error creating or sending music card:",
-                    error.message
+                    `Failed to send player for guild ${guildId}`
+                );
+                return;
+            }
+
+
+            /* =============================================
+               CACHE
+            ============================================= */
+
+            setTrackMediaCache(
+                guildId,
+                track.info.uri,
+                thumbnailURL,
+                cardBuffer
+            );
+
+
+            /* =============================================
+               STORE MESSAGE
+            ============================================= */
+
+            if (
+                !guildTrackMessages.has(
+                    guildId
+                )
+            ) {
+                guildTrackMessages.set(
+                    guildId,
+                    []
                 );
             }
+
+            guildTrackMessages
+                .get(guildId)
+                .push({
+                    messageId: message.id,
+                    channelId: channel.id,
+                    type: "track"
+                });
+
+
+            nowPlayingMessages.set(
+                guildId,
+                {
+                    messageId:
+                        message.id,
+
+                    channelId:
+                        channel.id,
+
+                    player,
+
+                    trackUri:
+                        track.info.uri
+                }
+            );
+
+
+            /* =============================================
+               PROGRESS UPDATES
+            ============================================= */
+
+            const interval =
+                startProgressUpdates(
+                    client,
+                    guildId,
+                    message,
+                    player,
+                    track
+                );
+
+            if (interval) {
+                progressUpdateIntervals.set(
+                    guildId,
+                    interval
+                );
+            }
+
+
+            /* =============================================
+               BUTTON COLLECTOR
+            ============================================= */
+
+            setupCollector(
+                client,
+                player,
+                channel,
+                message
+            );
         }
     );
+
+
+    /* =====================================================
+       TRACK END
+    ===================================================== */
 
     client.riffy.on(
         "trackEnd",
@@ -1368,57 +1235,40 @@ async function initializePlayer(client) {
             const guildId =
                 player.guildId;
 
-            clearTrackMediaCache(
-                guildId
-            );
-
-            if (
-                client.statusManager
-            ) {
-                await client.statusManager
-                    .onTrackEnd(
-                        guildId
-                    )
-                    .catch(() => {});
-            }
-
-            clearProgressUpdates(
-                guildId
-            );
+            clearProgressUpdates(guildId);
+            clearTrackMediaCache(guildId);
 
             const channel =
                 client.channels.cache.get(
                     player.textChannel
                 );
 
-            if (channel) {
-                const settings =
-                    await autoplayCollection
-                        .findOne({
-                            guildId
-                        })
-                        .catch(
-                            () => null
-                        );
+            if (!channel) return;
 
-                const hasNextTrack =
-                    player.queue.length >
-                        0 ||
-                    player.loop ===
-                        "queue" ||
-                    player.loop ===
-                        "track" ||
-                    settings?.autoplay;
+            const settings =
+                await autoplayCollection
+                    .findOne({ guildId })
+                    .catch(() => null);
 
-                if (!hasNextTrack) {
-                    await cleanupTrackMessages(
-                        client,
-                        player
-                    );
-                }
+            const hasNext =
+                player.queue.length > 0 ||
+                player.loop === "queue" ||
+                player.loop === "track" ||
+                settings?.autoplay;
+
+            if (!hasNext) {
+                await cleanupTrackMessages(
+                    client,
+                    player
+                );
             }
         }
     );
+
+
+    /* =====================================================
+       PLAYER DISCONNECT
+    ===================================================== */
 
     client.riffy.on(
         "playerDisconnect",
@@ -1426,23 +1276,8 @@ async function initializePlayer(client) {
             const guildId =
                 player.guildId;
 
-            clearTrackMediaCache(
-                guildId
-            );
-
-            if (
-                client.statusManager
-            ) {
-                await client.statusManager
-                    .onPlayerDisconnect(
-                        guildId
-                    )
-                    .catch(() => {});
-            }
-
-            clearProgressUpdates(
-                guildId
-            );
+            clearProgressUpdates(guildId);
+            clearTrackMediaCache(guildId);
 
             await cleanupTrackMessages(
                 client,
@@ -1450,6 +1285,11 @@ async function initializePlayer(client) {
             );
         }
     );
+
+
+    /* =====================================================
+       QUEUE END
+    ===================================================== */
 
     client.riffy.on(
         "queueEnd",
@@ -1462,22 +1302,22 @@ async function initializePlayer(client) {
             const guildId =
                 player.guildId;
 
-            clearTrackMediaCache(
-                guildId
-            );
+            clearProgressUpdates(guildId);
+            clearTrackMediaCache(guildId);
+
+            if (!channel) return;
 
             try {
                 const settings =
-                    await autoplayCollection.findOne(
-                        {
-                            guildId
-                        }
-                    );
+                    await autoplayCollection
+                        .findOne({ guildId })
+                        .catch(() => null);
 
                 const is24_7 =
                     settings?.twentyfourseven;
 
                 if (settings?.autoplay) {
+
                     await cleanupPreviousTrackMessages(
                         channel,
                         guildId
@@ -1489,6 +1329,7 @@ async function initializePlayer(client) {
                         );
 
                     if (!nextTrack) {
+
                         await cleanupTrackMessages(
                             client,
                             player
@@ -1497,22 +1338,20 @@ async function initializePlayer(client) {
                         if (!is24_7) {
                             player.destroy();
 
-                            await sendTransientCard(
+                            await sendTemporaryMessage(
                                 channel,
-                                "⚠️ **No more tracks to autoplay. Disconnecting...**",
-                                5000,
-                                "Autoplay Ended"
+                                "⚠️ **No more tracks to autoplay. Disconnecting...**"
                             );
                         } else {
-                            await sendTransientCard(
+                            await sendTemporaryMessage(
                                 channel,
-                                "🔄 **24/7 Mode: Bot will stay in voice channel. Queue is empty.**",
-                                5000,
-                                "Queue Empty"
+                                "🔄 **24/7 Mode: Bot will stay in the voice channel. Queue is empty.**"
                             );
                         }
                     }
+
                 } else {
+
                     await cleanupTrackMessages(
                         client,
                         player
@@ -1521,24 +1360,21 @@ async function initializePlayer(client) {
                     if (!is24_7) {
                         player.destroy();
 
-                        await sendTransientCard(
+                        await sendTemporaryMessage(
                             channel,
-                            "🎶 **Queue has ended. Autoplay is disabled.**",
-                            5000,
-                            "Queue Ended"
+                            "🎶 **Queue has ended. Autoplay is disabled.**"
                         );
                     } else {
-                        await sendTransientCard(
+                        await sendTemporaryMessage(
                             channel,
-                            "🔄 **24/7 Mode: Bot will stay in voice channel. Queue is empty.**",
-                            5000,
-                            "Queue Empty"
+                            "🔄 **24/7 Mode: Bot will stay in the voice channel. Queue is empty.**"
                         );
                     }
                 }
+
             } catch (error) {
                 console.error(
-                    "Error handling queue end:",
+                    "Queue end error:",
                     error
                 );
 
@@ -1546,10 +1382,58 @@ async function initializePlayer(client) {
                     client,
                     player
                 );
+
+                const settings =
+                    await autoplayCollection
+                        .findOne({ guildId })
+                        .catch(() => null);
+
+                if (
+                    !settings?.twentyfourseven
+                ) {
+                    try {
+                        player.destroy();
+                    } catch (_) {}
+                }
             }
         }
     );
 }
+
+
+/* =========================================================
+   TEMPORARY MESSAGE
+========================================================= */
+
+async function sendTemporaryMessage(
+    channel,
+    content,
+    timeout = 5000
+) {
+    try {
+        const message =
+            await channel.send({
+                content
+            });
+
+        setTimeout(
+            () =>
+                message.delete()
+                    .catch(() => {}),
+            timeout
+        );
+
+        return message;
+
+    } catch (_) {
+        return null;
+    }
+}
+
+
+/* =========================================================
+   CLEAN PREVIOUS TRACK
+========================================================= */
 
 async function cleanupPreviousTrackMessages(
     channel,
@@ -1560,29 +1444,26 @@ async function cleanupPreviousTrackMessages(
             guildId
         ) || [];
 
-    for (const messageInfo of messages) {
+    for (const info of messages) {
         try {
-            const fetchChannel =
+            const targetChannel =
                 channel.client.channels.cache.get(
-                    messageInfo.channelId
+                    info.channelId
                 );
 
-            if (fetchChannel) {
-                const message =
-                    await fetchChannel.messages
-                        .fetch(
-                            messageInfo.messageId
-                        )
-                        .catch(
-                            () => null
-                        );
+            if (!targetChannel) continue;
 
-                if (message) {
-                    await message
-                        .delete()
-                        .catch(() => {});
-                }
+            const message =
+                await targetChannel.messages
+                    .fetch(info.messageId)
+                    .catch(() => null);
+
+            if (message) {
+                await message
+                    .delete()
+                    .catch(() => {});
             }
+
         } catch (_) {}
     }
 
@@ -1591,6 +1472,11 @@ async function cleanupPreviousTrackMessages(
         []
     );
 }
+
+
+/* =========================================================
+   CLEAN ALL PLAYER MESSAGES
+========================================================= */
 
 async function cleanupTrackMessages(
     client,
@@ -1612,29 +1498,26 @@ async function cleanupTrackMessages(
             guildId
         ) || [];
 
-    for (const messageInfo of messages) {
+    for (const info of messages) {
         try {
             const channel =
                 client.channels.cache.get(
-                    messageInfo.channelId
+                    info.channelId
                 );
 
-            if (channel) {
-                const message =
-                    await channel.messages
-                        .fetch(
-                            messageInfo.messageId
-                        )
-                        .catch(
-                            () => null
-                        );
+            if (!channel) continue;
 
-                if (message) {
-                    await message
-                        .delete()
-                        .catch(() => {});
-                }
+            const message =
+                await channel.messages
+                    .fetch(info.messageId)
+                    .catch(() => null);
+
+            if (message) {
+                await message
+                    .delete()
+                    .catch(() => {});
             }
+
         } catch (_) {}
     }
 
@@ -1648,43 +1531,11 @@ async function cleanupTrackMessages(
     );
 }
 
-function formatDuration(ms) {
-    const seconds =
-        Math.floor(
-            (ms / 1000) % 60
-        );
 
-    const minutes =
-        Math.floor(
-            (ms / (1000 * 60)) % 60
-        );
+/* =========================================================
+   REFRESH NOW PLAYING
+========================================================= */
 
-    const hours =
-        Math.floor(
-            (ms / (1000 * 60 * 60)) % 24
-        );
-
-    return [
-        hours > 0
-            ? `${hours}h`
-            : null,
-        minutes > 0
-            ? `${minutes}m`
-            : null,
-        `${seconds}s`
-    ]
-        .filter(Boolean)
-        .join(" ");
-}
-
-/*
- * Rebuilds the now-playing message.
- *
- * IMPORTANT:
- * It uses ONLY the cached Discord CDN URL.
- *
- * It NEVER uses attachment://song-banner.png.
- */
 async function refreshNowPlayingPanel(
     client,
     guildId
@@ -1716,98 +1567,83 @@ async function refreshNowPlayingPanel(
 
     if (!channel) return;
 
-    const msg =
+    const message =
         await channel.messages
-            .fetch(
-                stored.messageId
-            )
+            .fetch(stored.messageId)
             .catch(() => null);
 
-    if (!msg) return;
+    if (!message) return;
 
     const track =
         player.current;
-
-    const lang =
-        await getLang(
-            guildId
-        ).catch(() => ({
-            console: {
-                player: {}
-            }
-        }));
-
-    const t =
-        lang.console?.player ||
-        {};
 
     const requester =
         requesters.get(
             track.info.uri
         ) ||
-        (
-            t.trackInfo?.unknown ||
-            "Unknown"
-        );
+        track.info.requester ||
+        "Unknown";
 
-    const commandMentionMap =
-        await getCommandMentionMap(
-            client
-        );
-
-    const progressBar =
-        createProgressBar(
-            player.position || 0,
-            track.info.length || 1
-        );
-
-    /*
-     * FIX:
-     *
-     * Get the CDN URL from cache.
-     *
-     * Do not construct attachment://...
-     */
-    const cachedMedia =
-        useGeneratedSongCard
-            ? getTrackMediaCache(
-                guildId,
-                track.info.uri
+    const progress =
+        Math.min(
+            100,
+            Math.round(
+                (
+                    (player.position || 0) /
+                    (track.info.length || 1)
+                ) * 100
             )
-            : null;
+        );
 
-    let mediaUrl =
-        cachedMedia?.mediaUrl ||
+    const cached =
+        getTrackMediaCache(
+            guildId,
+            track.info.uri
+        );
+
+    let thumbnail =
+        cached?.mediaUrl ||
+        track.info.thumbnail ||
         null;
 
-    /*
-     * If cache is empty, recover the URL from
-     * the existing Discord message.
-     */
     if (
-        mediaUrl &&
-        mediaUrl.startsWith(
+        thumbnail &&
+        thumbnail.startsWith(
             "attachment://"
         )
     ) {
-        mediaUrl = null;
+        thumbnail =
+            track.info.thumbnail ||
+            null;
     }
 
-    if (!mediaUrl) {
-        const existingAttachment =
-            msg.attachments?.first();
+    const progressBar =
+        config.showProgressBar !== false
+            ? createProgressBar(
+                player.position || 0,
+                track.info.length || 1
+            )
+            : null;
 
-        if (existingAttachment?.url) {
-            mediaUrl =
-                existingAttachment.url;
+    const embed =
+        buildNowPlayingEmbed(
+            track,
+            requester,
+            {},
+            progressBar,
+            progress,
+            thumbnail,
+            {
+                paused:
+                    player.paused,
 
-            setTrackMediaCache(
-                guildId,
-                track.info.uri,
-                mediaUrl
-            );
-        }
-    }
+                loop:
+                    player.loop,
+
+                queueLength:
+                    player.queue.length
+            }
+        );
 
     const actionRows =
         buildPlayerActionRows(
@@ -1818,54 +1654,20 @@ async function refreshNowPlayingPanel(
             ) || null
         );
 
-    const container =
-        buildNowPlayingContainer(
-            track,
-            requester,
-            t,
-            config.showProgressBar !==
-                false
-                ? progressBar
-                : null,
-            Math.min(
-                100,
-                Math.round(
-                    (
-                        (player.position || 0) /
-                        (track.info.length || 1)
-                    ) * 100
-                )
-            ),
-            mediaUrl,
-            actionRows,
-            {
-                paused:
-                    player.paused,
-                loop:
-                    player.loop,
-                currentPosition:
-                    player.position || 0,
-                queueLength:
-                    player.queue.length,
-                commandMentionMap
-            }
-        );
-
-    await msg
-        .edit({
-            components: [
-                container
-            ],
-            flags:
-                MessageFlags.IsComponentsV2
-        })
-        .catch((error) => {
-            console.warn(
-                "[ PLAYER ] Failed to refresh panel:",
-                error.message
-            );
-        });
+    await message.edit({
+        embeds: [embed],
+        components: [
+            actionRows.playbackRow,
+            actionRows.manageRow,
+            actionRows.filterRow
+        ]
+    }).catch(() => {});
 }
+
+
+/* =========================================================
+   BUTTON COLLECTOR
+========================================================= */
 
 function setupCollector(
     client,
@@ -1873,97 +1675,82 @@ function setupCollector(
     channel,
     message
 ) {
-    const filter = (i) =>
-        [
-            "loopToggle",
-            "skipTrack",
-            "stopTrack",
-            "togglePlayback",
-            "player_favorite",
-            "player_add_song",
-            "player_volume",
-            "player_save_song",
-            "player_queue",
-            "player_shuffle",
-            "player_filter_select",
-            "player_filter_clear"
-        ].includes(i.customId);
+    const filter = (interaction) => [
+        "loopToggle",
+        "skipTrack",
+        "stopTrack",
+        "togglePlayback",
+        "player_favorite",
+        "player_add_song",
+        "player_volume",
+        "player_save_song",
+        "player_queue",
+        "player_shuffle",
+        "player_filter_select",
+        "player_filter_clear"
+    ].includes(
+        interaction.customId
+    );
 
     const collector =
-        message.createMessageComponentCollector(
-            {
-                filter,
-                time: 300000
-            }
-        );
+        message.createMessageComponentCollector({
+            filter,
+            time: 30 * 60 * 1000
+        });
 
     collector.on(
         "collect",
-        async (i) => {
+        async (interaction) => {
+
             const member =
-                i.member;
+                interaction.member;
 
             const voiceChannel =
-                member.voice.channel;
+                member?.voice?.channel;
 
             const playerChannel =
                 player.voiceChannel;
 
             if (
                 !voiceChannel ||
-                voiceChannel.id !==
-                    playerChannel
+                voiceChannel.id !== playerChannel
             ) {
-                const vcContainer =
-                    cardFromMessage(
-                        "## 🔒 Voice Channel Required\n\nYou need to be in the same voice channel to use the controls!",
-                        "Voice Channel Required"
-                    );
-
-                const sentMessage =
-                    await channel.send({
-                        components: [
-                            vcContainer
-                        ],
-                        flags:
-                            MessageFlags.IsComponentsV2
-                    });
-
-                setTimeout(
-                    () =>
-                        sentMessage
-                            .delete()
-                            .catch(() => {}),
-                    config.embedTimeout *
-                        1000
-                );
+                await interaction.reply({
+                    content:
+                        "🔒 **You need to be in the same voice channel as the bot to use these controls.**",
+                    ephemeral: true
+                }).catch(() => {});
 
                 return;
             }
 
+
+            /* =========================================
+               ADD SONG
+            ========================================= */
+
             if (
-                i.customId ===
+                interaction.customId ===
                 "player_add_song"
             ) {
-                await i
+                await interaction
                     .showModal(
                         createAddSongModal()
                     )
                     .catch(() => {});
 
                 const modal =
-                    await i
+                    await interaction
                         .awaitModalSubmit({
                             filter: (m) =>
                                 m.customId ===
-                                    "player_modal_addsong" &&
+                                "player_modal_addsong" &&
                                 m.user.id ===
-                                    i.user.id,
+                                interaction.user.id,
+
                             time: 60000
                         })
-                        .catch(
-                            () => null
-                        );
+                        .catch(() => null);
 
                 if (modal) {
                     await handlePlayerModalSubmit(
@@ -1977,11 +1764,16 @@ function setupCollector(
                 return;
             }
 
+
+            /* =========================================
+               VOLUME
+            ========================================= */
+
             if (
-                i.customId ===
+                interaction.customId ===
                 "player_volume"
             ) {
-                await i
+                await interaction
                     .showModal(
                         createVolumeModal(
                             player.volume
@@ -1990,18 +1782,17 @@ function setupCollector(
                     .catch(() => {});
 
                 const modal =
-                    await i
+                    await interaction
                         .awaitModalSubmit({
                             filter: (m) =>
                                 m.customId ===
-                                    "player_modal_volume" &&
+                                "player_modal_volume" &&
                                 m.user.id ===
-                                    i.user.id,
+                                interaction.user.id,
+
                             time: 60000
                         })
-                        .catch(
-                            () => null
-                        );
+                        .catch(() => null);
 
                 if (modal) {
                     await handlePlayerModalSubmit(
@@ -2015,29 +1806,33 @@ function setupCollector(
                 return;
             }
 
+
+            /* =========================================
+               SAVE SONG
+            ========================================= */
+
             if (
-                i.customId ===
+                interaction.customId ===
                 "player_save_song"
             ) {
-                await i
+                await interaction
                     .showModal(
                         createSaveSongModal()
                     )
                     .catch(() => {});
 
                 const modal =
-                    await i
+                    await interaction
                         .awaitModalSubmit({
                             filter: (m) =>
                                 m.customId ===
-                                    "player_modal_save_song" &&
+                                "player_modal_save_song" &&
                                 m.user.id ===
-                                    i.user.id,
+                                interaction.user.id,
+
                             time: 60000
                         })
-                        .catch(
-                            () => null
-                        );
+                        .catch(() => null);
 
                 if (modal) {
                     await handlePlayerModalSubmit(
@@ -2051,56 +1846,54 @@ function setupCollector(
                 return;
             }
 
-            const deferred =
-                await safeDeferUpdate(
-                    i
-                );
 
-            if (
-                !deferred &&
-                !i.deferred &&
-                !i.replied
-            ) {
-                return;
-            }
+            /* =========================================
+               NORMAL BUTTONS
+            ========================================= */
+
+            await interaction.deferUpdate()
+                .catch(() => {});
 
             await handleInteraction(
                 client,
-                i,
+                interaction,
                 player,
                 channel
             );
         }
     );
 
+    collector.on(
+        "end",
+        () => {}
+    );
+
     return collector;
 }
 
+
+/* =========================================================
+   INTERACTION HANDLER
+========================================================= */
+
 async function handleInteraction(
     client,
-    i,
+    interaction,
     player,
     channel
 ) {
-    const lang =
-        await getLang(
-            channel.guildId
-        ).catch(() => ({
-            console: {
-                player: {}
-            }
-        }));
+    switch (
+        interaction.customId
+    ) {
 
-    const t =
-        lang.console?.player ||
-        {};
+        /* =============================================
+           LOOP
+        ============================================= */
 
-    switch (i.customId) {
         case "loopToggle":
             await toggleLoop(
                 player,
-                channel,
-                t
+                channel
             );
 
             await refreshNowPlayingPanel(
@@ -2109,50 +1902,31 @@ async function handleInteraction(
             );
             break;
 
-        case "skipTrack": {
-            const guildId =
-                player.guildId;
 
+        /* =============================================
+           SKIP
+        ============================================= */
+
+        case "skipTrack":
             clearProgressUpdates(
-                guildId
+                player.guildId
             );
 
-            player.stop();
+            try {
+                player.stop();
+            } catch (_) {}
 
-            await sendEmbed(
+            await sendTemporaryMessage(
                 channel,
-                t.controls?.skip ||
-                    "⏭️ **Skipping to next song...**"
+                "⏭️ **Skipping to next song...**"
             );
 
             break;
-        }
 
-        case "disableLoop":
-            await disableLoop(
-                player,
-                channel,
-                t
-            );
-            break;
 
-        case "showLyrics":
-            await showLyrics(
-                channel,
-                player
-            );
-            break;
-
-        case "clearQueue":
-            player.queue.clear();
-
-            await sendEmbed(
-                channel,
-                t.controls?.queueCleared ||
-                    "🗑️ **Queue has been cleared!**"
-            );
-
-            break;
+        /* =============================================
+           STOP
+        ============================================= */
 
         case "stopTrack":
             await cleanupTrackMessages(
@@ -2160,26 +1934,36 @@ async function handleInteraction(
                 player
             );
 
-            player.stop();
-            player.destroy();
+            try {
+                player.stop();
+            } catch (_) {}
 
-            await sendEmbed(
+            try {
+                player.destroy();
+            } catch (_) {}
+
+            await sendTemporaryMessage(
                 channel,
-                t.controls?.playbackStopped ||
-                    "⏹️ **Playback has been stopped and player destroyed!**"
+                "⏹️ **Playback stopped.**"
             );
 
             break;
 
+
+        /* =============================================
+           PLAY / PAUSE
+        ============================================= */
+
         case "togglePlayback":
+
             try {
                 if (
                     !player ||
                     player.destroyed
                 ) {
-                    await sendEmbed(
+                    await sendTemporaryMessage(
                         channel,
-                        "❌ **Player is not available!**"
+                        "❌ **Player is not available.**"
                     );
 
                     return;
@@ -2188,18 +1972,16 @@ async function handleInteraction(
                 if (player.paused) {
                     player.pause(false);
 
-                    await sendEmbed(
+                    await sendTemporaryMessage(
                         channel,
-                        t.controls?.playbackResumed ||
-                            "▶️ **Playback has been resumed!**"
+                        "▶️ **Playback resumed.**"
                     );
                 } else {
                     player.pause(true);
 
-                    await sendEmbed(
+                    await sendTemporaryMessage(
                         channel,
-                        t.controls?.playbackPaused ||
-                            "⏸️ **Playback has been paused!**"
+                        "⏸️ **Playback paused.**"
                     );
                 }
 
@@ -2207,26 +1989,29 @@ async function handleInteraction(
                     client,
                     player.guildId
                 );
-            } catch (error) {
-                console.warn(
-                    `[ PLAYER ] Toggle playback error: ${error.message}`
-                );
 
-                await sendEmbed(
-                    channel,
-                    "⚠️ **Failed to change playback state. Please try again.**"
+            } catch (error) {
+                console.error(
+                    "Playback toggle error:",
+                    error
                 );
             }
 
             break;
 
+
+        /* =============================================
+           FAVORITE
+        ============================================= */
+
         case "player_favorite": {
+
             try {
                 const current =
                     player.current?.info;
 
                 if (!current?.uri) {
-                    await sendEmbed(
+                    await sendTemporaryMessage(
                         channel,
                         "❌ **No active song to favorite.**"
                     );
@@ -2235,7 +2020,7 @@ async function handleInteraction(
                 }
 
                 const userId =
-                    i.user.id;
+                    interaction.user.id;
 
                 const serverId =
                     channel.guild.id;
@@ -2250,32 +2035,24 @@ async function handleInteraction(
                     `${LEGACY_PLAYER_FAVORITES_NAME}_${userId}`;
 
                 let existing =
-                    await playlistCollection.findOne(
-                        {
-                            name:
-                                playlistName,
-                            userId,
-                            serverId
-                        }
-                    );
+                    await playlistCollection.findOne({
+                        name: playlistName,
+                        userId,
+                        serverId
+                    });
 
                 if (!existing) {
                     const legacy =
-                        await playlistCollection.findOne(
-                            {
-                                name:
-                                    legacyPlaylistName,
-                                userId,
-                                serverId
-                            }
-                        );
+                        await playlistCollection.findOne({
+                            name:
+                                legacyPlaylistName,
+                            userId,
+                            serverId
+                        });
 
                     if (legacy) {
                         await playlistCollection.updateOne(
-                            {
-                                _id:
-                                    legacy._id
-                            },
+                            { _id: legacy._id },
                             {
                                 $set: {
                                     name:
@@ -2286,36 +2063,35 @@ async function handleInteraction(
                             }
                         );
 
-                        existing =
-                            await playlistCollection.findOne(
-                                {
-                                    _id:
-                                        legacy._id
-                                }
-                            );
+                        existing = legacy;
                     }
                 }
 
                 if (!existing) {
-                    await playlistCollection.insertOne(
-                        {
-                            name:
-                                playlistName,
-                            songs: [],
-                            isPrivate:
-                                true,
-                            userId,
-                            serverId,
-                            serverName
-                        }
-                    );
+                    await playlistCollection.insertOne({
+                        name:
+                            playlistName,
+
+                        songs: [],
+
+                        isPrivate:
+                            true,
+
+                        userId,
+
+                        serverId,
+
+                        serverName
+                    });
                 }
 
                 await playlistCollection.updateOne(
                     {
                         name:
                             playlistName,
+
                         userId,
+
                         serverId
                     },
                     {
@@ -2328,12 +2104,18 @@ async function handleInteraction(
                     }
                 );
 
-                await sendEmbed(
+                await sendTemporaryMessage(
                     channel,
-                    "✅ **Added to Favorites.**"
+                    "⭐ **Added to Favorites.**"
                 );
-            } catch (_) {
-                await sendEmbed(
+
+            } catch (error) {
+                console.error(
+                    "Favorite error:",
+                    error
+                );
+
+                await sendTemporaryMessage(
                     channel,
                     "⚠️ **Failed to add favorite.**"
                 );
@@ -2342,18 +2124,18 @@ async function handleInteraction(
             break;
         }
 
-        case "player_filter_select": {
-            const selectedFilter =
-                i.values?.[0];
 
-            /*
-             * FIX:
-             * Use the same clear value used
-             * by createFilterRow().
-             */
+        /* =============================================
+           FILTER
+        ============================================= */
+
+        case "player_filter_select": {
+
+            const selected =
+                interaction.values?.[0];
+
             if (
-                selectedFilter ===
-                "__clear__"
+                selected === "__clear__"
             ) {
                 player.filters.clearFilters();
 
@@ -2366,7 +2148,7 @@ async function handleInteraction(
                     player.guildId
                 );
 
-                await sendEmbed(
+                await sendTemporaryMessage(
                     channel,
                     "🧹 **Filters cleared.**"
                 );
@@ -2377,21 +2159,21 @@ async function handleInteraction(
             const applied =
                 await applyFilterByKey(
                     player,
-                    selectedFilter
+                    selected
                 );
 
             if (!applied) {
-                await sendEmbed(
+                await sendTemporaryMessage(
                     channel,
-                    "⚠️ **Invalid filter selection.**"
+                    "⚠️ **Invalid filter.**"
                 );
 
-                return;
+                break;
             }
 
             guildActiveFilter.set(
                 player.guildId,
-                selectedFilter
+                selected
             );
 
             await refreshNowPlayingPanel(
@@ -2399,15 +2181,21 @@ async function handleInteraction(
                 player.guildId
             );
 
-            await sendEmbed(
+            await sendTemporaryMessage(
                 channel,
-                `🎛️ **Filter applied:** ${selectedFilter}`
+                `🎛️ **Filter applied:** ${selected}`
             );
 
             break;
         }
 
+
+        /* =============================================
+           CLEAR FILTER
+        ============================================= */
+
         case "player_filter_clear":
+
             player.filters.clearFilters();
 
             guildActiveFilter.delete(
@@ -2419,51 +2207,75 @@ async function handleInteraction(
                 player.guildId
             );
 
-            await sendEmbed(
-                channel,
-                "🧹 **Filters cleared.**"
-            );
-
             break;
 
+
+        /* =============================================
+           QUEUE
+        ============================================= */
+
         case "player_queue": {
-            if (!player.queue.length) {
-                await sendEmbed(
+
+            if (
+                !player.queue.length
+            ) {
+                await sendTemporaryMessage(
                     channel,
                     "📭 **Queue is empty.**"
                 );
 
-                return;
+                break;
             }
 
             const preview =
                 player.queue
-                    .slice(0, 8)
+                    .slice(0, 10)
                     .map(
                         (item, index) =>
-                            `${index + 1}. ${
-                                item.info?.title ||
-                                "Unknown title"
-                            }`
+                            `${index + 1}. ${item.info?.title || "Unknown title"}`
                     )
                     .join("\n");
 
-            await sendEmbed(
-                channel,
-                `📄 **Upcoming Queue**\n\n${preview}`
-            );
+            const embed =
+                new EmbedBuilder()
+                    .setColor(0x5865F2)
+                    .setTitle("📋 Upcoming Queue")
+                    .setDescription(
+                        preview
+                    );
+
+            await channel.send({
+                embeds: [embed]
+            })
+                .then((msg) => {
+                    setTimeout(
+                        () =>
+                            msg.delete()
+                                .catch(() => {}),
+                        config.embedTimeout * 1000
+                    );
+                })
+                .catch(() => {});
 
             break;
         }
 
+
+        /* =============================================
+           SHUFFLE
+        ============================================= */
+
         case "player_shuffle":
-            if (player.queue.length < 2) {
-                await sendEmbed(
+
+            if (
+                player.queue.length < 2
+            ) {
+                await sendTemporaryMessage(
                     channel,
-                    "🔀 **Need at least 2 songs in queue to shuffle.**"
+                    "🔀 **Need at least 2 songs in the queue to shuffle.**"
                 );
 
-                return;
+                break;
             }
 
             player.queue.shuffle();
@@ -2473,44 +2285,19 @@ async function handleInteraction(
                 player.guildId
             );
 
-            await sendEmbed(
+            await sendTemporaryMessage(
                 channel,
                 "🔀 **Queue shuffled.**"
             );
 
             break;
-
-        case "volumeUp":
-            await adjustVolume(
-                player,
-                channel,
-                10,
-                t
-            );
-
-            await refreshNowPlayingPanel(
-                client,
-                player.guildId
-            );
-
-            break;
-
-        case "volumeDown":
-            await adjustVolume(
-                player,
-                channel,
-                -10,
-                t
-            );
-
-            await refreshNowPlayingPanel(
-                client,
-                player.guildId
-            );
-
-            break;
     }
 }
+
+
+/* =========================================================
+   MODAL HANDLER
+========================================================= */
 
 async function handlePlayerModalSubmit(
     client,
@@ -2518,14 +2305,16 @@ async function handlePlayerModalSubmit(
     player,
     channel
 ) {
-    await modal
-        .deferReply({
-            flags:
-                MessageFlags.Ephemeral
-        })
-        .catch(() => {});
+    await modal.deferReply({
+        ephemeral: true
+    }).catch(() => {});
 
     try {
+
+        /* =============================================
+           ADD SONG
+        ============================================= */
+
         if (
             modal.customId ===
             "player_modal_addsong"
@@ -2540,20 +2329,18 @@ async function handlePlayerModalSubmit(
             if (!query) {
                 await modal.editReply({
                     content:
-                        "❌ Please provide a valid song name or URL."
+                        "❌ Please enter a song name or URL."
                 });
 
                 return;
             }
 
             const resolve =
-                await client.riffy.resolve(
-                    {
-                        query,
-                        requester:
-                            modal.user.username
-                    }
-                );
+                await client.riffy.resolve({
+                    query,
+                    requester:
+                        modal.user.username
+                });
 
             if (
                 !resolve ||
@@ -2564,7 +2351,7 @@ async function handlePlayerModalSubmit(
             ) {
                 await modal.editReply({
                     content:
-                        "❌ No results found for that query."
+                        "❌ No results found."
                 });
 
                 return;
@@ -2576,7 +2363,10 @@ async function handlePlayerModalSubmit(
                 resolve.loadType ===
                 "playlist"
             ) {
-                for (const track of resolve.tracks) {
+                for (
+                    const track
+                    of resolve.tracks
+                ) {
                     track.info.requester =
                         modal.user.username;
 
@@ -2618,22 +2408,18 @@ async function handlePlayerModalSubmit(
                 player.play();
             }
 
-            await refreshNowPlayingPanel(
-                client,
-                player.guildId
-            );
-
             await modal.editReply({
                 content:
-                    `✅ Added ${added} track${
-                        added === 1
-                            ? ""
-                            : "s"
-                    } to queue.`
+                    `✅ Added ${added} track${added === 1 ? "" : "s"} to the queue.`
             });
 
             return;
         }
+
+
+        /* =============================================
+           VOLUME
+        ============================================= */
 
         if (
             modal.customId ===
@@ -2659,7 +2445,7 @@ async function handlePlayerModalSubmit(
             ) {
                 await modal.editReply({
                     content:
-                        "❌ Volume must be a number between 1 and 100."
+                        "❌ Volume must be between 1 and 100."
                 });
 
                 return;
@@ -2676,11 +2462,16 @@ async function handlePlayerModalSubmit(
 
             await modal.editReply({
                 content:
-                    `🔊 Volume set to ${volume}%.`
+                    `🔊 Volume set to **${volume}%**.`
             });
 
             return;
         }
+
+
+        /* =============================================
+           SAVE SONG
+        ============================================= */
 
         if (
             modal.customId ===
@@ -2692,13 +2483,13 @@ async function handlePlayerModalSubmit(
             if (!current?.uri) {
                 await modal.editReply({
                     content:
-                        "❌ No active song to save."
+                        "❌ No active song."
                 });
 
                 return;
             }
 
-            const rawPlaylistName =
+            const rawName =
                 modal.fields
                     .getTextInputValue(
                         "playlistName"
@@ -2706,7 +2497,7 @@ async function handlePlayerModalSubmit(
                     ?.trim();
 
             const playlistName =
-                rawPlaylistName?.slice(
+                rawName?.slice(
                     0,
                     80
                 );
@@ -2730,35 +2521,40 @@ async function handlePlayerModalSubmit(
                 channel.guild.name;
 
             const existing =
-                await playlistCollection.findOne(
-                    {
-                        name:
-                            playlistName,
-                        userId,
-                        serverId
-                    }
-                );
+                await playlistCollection.findOne({
+                    name:
+                        playlistName,
+
+                    userId,
+
+                    serverId
+                });
 
             if (!existing) {
-                await playlistCollection.insertOne(
-                    {
-                        name:
-                            playlistName,
-                        songs: [],
-                        isPrivate:
-                            false,
-                        userId,
-                        serverId,
-                        serverName
-                    }
-                );
+                await playlistCollection.insertOne({
+                    name:
+                        playlistName,
+
+                    songs: [],
+
+                    isPrivate:
+                        false,
+
+                    userId,
+
+                    serverId,
+
+                    serverName
+                });
             }
 
             await playlistCollection.updateOne(
                 {
                     name:
                         playlistName,
+
                     userId,
+
                     serverId
                 },
                 {
@@ -2773,159 +2569,258 @@ async function handlePlayerModalSubmit(
 
             await modal.editReply({
                 content:
-                    `💾 Saved current song to playlist: ${playlistName}`
+                    `💾 Saved to **${playlistName}**.`
             });
         }
+
     } catch (error) {
         console.error(
-            "[ PLAYER ] Modal error:",
+            "Player modal error:",
             error
         );
 
         await modal.editReply({
             content:
-                "⚠️ Failed to process modal action."
+                "⚠️ Failed to process this action."
         }).catch(() => {});
     }
 }
 
-async function sendEmbed(
-    channel,
-    message
-) {
-    const container =
-        cardFromMessage(
-            message,
-            "Player Update"
-        );
 
-    const sentMessage =
-        await channel.send({
-            components: [
-                container
-            ],
-            flags:
-                MessageFlags.IsComponentsV2
-        });
-
-    setTimeout(
-        () =>
-            sentMessage
-                .delete()
-                .catch(() => {}),
-        config.embedTimeout * 1000
-    );
-}
+/* =========================================================
+   VOLUME
+========================================================= */
 
 async function adjustVolume(
     player,
     channel,
-    amount,
-    t = {}
+    amount
 ) {
+    const current =
+        Number(player.volume) || 100;
+
     const newVolume =
         Math.min(
             100,
             Math.max(
                 10,
-                player.volume +
-                    amount
+                current + amount
             )
         );
 
     if (
-        newVolume ===
-        player.volume
+        newVolume === current
     ) {
-        await sendEmbed(
+        await sendTemporaryMessage(
             channel,
             amount > 0
-                ? (
-                    t.controls?.volumeMax ||
-                    "🔊 **Volume is already at maximum!**"
-                )
-                : (
-                    t.controls?.volumeMin ||
-                    "🔉 **Volume is already at minimum!**"
-                )
-        );
-    } else {
-        player.setVolume(
-            newVolume
+                ? "🔊 **Volume is already at maximum.**"
+                : "🔉 **Volume is already at minimum.**"
         );
 
-        await sendEmbed(
-            channel,
-            (
-                t.controls?.volumeChanged ||
-                "🔊 **Volume changed to {volume}%!**"
-            ).replace(
-                "{volume}",
-                newVolume
-            )
-        );
+        return;
     }
+
+    player.setVolume(
+        newVolume
+    );
+
+    await sendTemporaryMessage(
+        channel,
+        `🔊 **Volume changed to ${newVolume}%**`
+    );
 }
+
+
+/* =========================================================
+   LOOP
+========================================================= */
 
 async function toggleLoop(
     player,
-    channel,
-    t = {}
+    channel
 ) {
-    const currentMode =
+    const current =
         player.loop || "none";
 
-    const nextMode =
-        currentMode === "none"
+    const next =
+        current === "none"
             ? "track"
-            : currentMode === "track"
+            : current === "track"
                 ? "queue"
                 : "none";
 
-    player.setLoop(
-        nextMode
-    );
+    player.setLoop(next);
 
-    if (
-        nextMode === "track"
-    ) {
-        await sendEmbed(
+    if (next === "track") {
+        await sendTemporaryMessage(
             channel,
-            t.controls?.trackLoopActivated ||
-                "🔁 **Track loop is activated!**"
+            "🔂 **Track loop activated.**"
         );
-    } else if (
-        nextMode === "queue"
-    ) {
-        await sendEmbed(
+    } else if (next === "queue") {
+        await sendTemporaryMessage(
             channel,
-            t.controls?.queueLoopActivated ||
-                "🔁 **Queue loop is activated!**"
+            "🔁 **Queue loop activated.**"
         );
     } else {
-        await sendEmbed(
+        await sendTemporaryMessage(
             channel,
-            t.controls?.loopDisabled ||
-                "❌ **Loop is disabled!**"
+            "❌ **Loop disabled.**"
         );
     }
 }
 
-async function disableLoop(
-    player,
-    channel,
-    t = {}
-) {
-    player.setLoop(
-        "none"
-    );
 
-    await sendEmbed(
-        channel,
-        t.controls?.loopDisabled ||
-            "❌ **Loop is disabled!**"
-    );
+/* =========================================================
+   FILTERS
+========================================================= */
+
+async function applyFilterByKey(
+    player,
+    selectedFilter
+) {
+    try {
+
+        switch (
+            selectedFilter
+        ) {
+
+            case "karaoke":
+                player.filters
+                    .setKaraoke(true);
+                break;
+
+            case "timescale":
+                player.filters
+                    .setTimescale(
+                        true,
+                        {
+                            speed: 1.2,
+                            pitch: 1.2
+                        }
+                    );
+                break;
+
+            case "tremolo":
+                player.filters
+                    .setTremolo(
+                        true,
+                        {
+                            frequency: 4,
+                            depth: 0.75
+                        }
+                    );
+                break;
+
+            case "vibrato":
+                player.filters
+                    .setVibrato(
+                        true,
+                        {
+                            frequency: 4,
+                            depth: 0.75
+                        }
+                    );
+                break;
+
+            case "rotation":
+                player.filters
+                    .setRotation(
+                        true,
+                        {
+                            rotationHz: 0.2
+                        }
+                    );
+                break;
+
+            case "distortion":
+                player.filters
+                    .setDistortion(
+                        true,
+                        {
+                            sinScale: 1,
+                            cosScale: 1
+                        }
+                    );
+                break;
+
+            case "channelmix":
+                player.filters
+                    .setChannelMix(
+                        true,
+                        {
+                            leftToLeft: 0.5,
+                            leftToRight: 0.5,
+                            rightToLeft: 0.5,
+                            rightToRight: 0.5
+                        }
+                    );
+                break;
+
+            case "lowpass":
+                player.filters
+                    .setLowPass(
+                        true,
+                        {
+                            smoothing: 0.5
+                        }
+                    );
+                break;
+
+            case "bassboost":
+                player.filters
+                    .setBassboost(
+                        true,
+                        {
+                            value: 3
+                        }
+                    );
+                break;
+
+            case "nightcore":
+                player.filters
+                    .setTimescale(
+                        true,
+                        {
+                            speed: 1.25,
+                            pitch: 1.25,
+                            rate: 1
+                        }
+                    );
+                break;
+
+            case "daycore":
+                player.filters
+                    .setTimescale(
+                        true,
+                        {
+                            speed: 1,
+                            pitch: 0.8,
+                            rate: 1
+                        }
+                    );
+                break;
+
+            default:
+                return false;
+        }
+
+        return true;
+
+    } catch (error) {
+        console.error(
+            "Filter error:",
+            error
+        );
+
+        return false;
+    }
 }
+
+
+/* =========================================================
+   LYRICS
+========================================================= */
 
 async function getLyrics(
     trackName,
@@ -2933,8 +2828,9 @@ async function getLyrics(
     duration
 ) {
     try {
+
         trackName =
-            trackName
+            String(trackName || "")
                 .replace(
                     /\b(Official|Audio|Video|Lyrics|Theme|Soundtrack|Music|Full Version|HD|4K|Visualizer|Radio Edit|Live|Remix|Mix|Extended|Cover|Parody|Performance|Version|Unplugged|Reupload)\b/gi,
                     ""
@@ -2950,7 +2846,7 @@ async function getLyrics(
                 .trim();
 
         artistName =
-            artistName
+            String(artistName || "")
                 .replace(
                     /\b(Topic|VEVO|Records|Label|Productions|Entertainment|Ltd|Inc|Band|DJ|Composer|Performer)\b/gi,
                     ""
@@ -2979,12 +2875,14 @@ async function getLyrics(
                     params: {
                         track_name:
                             trackName,
+
                         artist_name:
                             artistName,
+
                         duration
                     },
-                    timeout:
-                        5000
+
+                    timeout: 5000
                 }
             );
 
@@ -3008,11 +2906,12 @@ async function getLyrics(
                     params: {
                         track_name:
                             trackName,
+
                         artist_name:
                             artistName
                     },
-                    timeout:
-                        5000
+
+                    timeout: 5000
                 }
             );
 
@@ -3030,44 +2929,35 @@ async function getLyrics(
         }
 
         return null;
+
     } catch (error) {
         console.error(
             "Lyrics fetch error:",
-            error.response?.data
-                ?.message ||
-                error.message
+            error.response?.data?.message ||
+            error.message
         );
 
         return null;
     }
 }
 
+
+/* =========================================================
+   SHOW LYRICS
+========================================================= */
+
 async function showLyrics(
     channel,
     player
 ) {
-    const lang =
-        await getLang(
-            player.guildId
-        ).catch(() => ({
-            console: {
-                player: {}
-            }
-        }));
-
-    const t =
-        lang.console?.player ||
-        {};
-
     if (
         !player ||
         !player.current ||
         !player.current.info
     ) {
-        await sendEmbed(
+        await sendTemporaryMessage(
             channel,
-            t.lyrics?.noSongPlaying ||
-                "🚫 **No song is currently playing.**"
+            "🚫 **No song is currently playing.**"
         );
 
         return;
@@ -3086,10 +2976,9 @@ async function showLyrics(
         );
 
     if (!lyrics) {
-        await sendEmbed(
+        await sendTemporaryMessage(
             channel,
-            t.lyrics?.notFound ||
-                "❌ **Lyrics not found!**"
+            "❌ **Lyrics not found.**"
         );
 
         return;
@@ -3099,282 +2988,82 @@ async function showLyrics(
         lyrics
             .split("\n")
             .map(
-                (line) =>
-                    line.trim()
+                line => line.trim()
             )
             .filter(Boolean);
 
-    const songDuration =
-        Math.floor(
-            track.length / 1000
-        );
-
-    const lyricsContainer =
-        new ContainerBuilder()
-            .addTextDisplayComponents(
-                (textDisplay) =>
-                    textDisplay.setContent(
-                        `${
-                            (
-                                t.lyrics?.liveTitle ||
-                                "## 🎵 Live Lyrics: {title}"
-                            ).replace(
-                                "{title}",
-                                track.title
-                            )
-                        }\n\n` +
-                        (
-                            t.lyrics?.syncing ||
-                            "🔄 Syncing lyrics..."
-                        )
-                    )
-            );
-
-    const stopButton =
-        new ButtonBuilder()
-            .setCustomId(
-                "stopLyrics"
+    const embed =
+        new EmbedBuilder()
+            .setColor(0x5865F2)
+            .setTitle(
+                `🎵 ${track.title}`
             )
-            .setLabel(
-                t.lyrics?.stopButton ||
-                    "Stop Lyrics"
-            )
-            .setStyle(
-                ButtonStyle.Danger
-            );
-
-    const fullButton =
-        new ButtonBuilder()
-            .setCustomId(
-                "fullLyrics"
-            )
-            .setLabel(
-                t.lyrics?.fullButton ||
-                    "Full Lyrics"
-            )
-            .setStyle(
-                ButtonStyle.Primary
+            .setDescription(
+                lines
+                    .slice(0, 30)
+                    .join("\n")
+                    .slice(0, 4000)
             );
 
     const row =
         new ActionRowBuilder()
             .addComponents(
-                fullButton,
-                stopButton
+                new ButtonBuilder()
+                    .setCustomId(
+                        "deleteLyrics"
+                    )
+                    .setLabel("Delete")
+                    .setStyle(
+                        ButtonStyle.Danger
+                    )
             );
 
     const message =
         await channel.send({
-            components: [
-                lyricsContainer,
-                row
-            ],
-            flags:
-                MessageFlags.IsComponentsV2
+            embeds: [embed],
+            components: [row]
         });
-
-    const guildId =
-        player.guildId;
 
     if (
         !guildTrackMessages.has(
-            guildId
+            player.guildId
         )
     ) {
         guildTrackMessages.set(
-            guildId,
+            player.guildId,
             []
         );
     }
 
     guildTrackMessages
-        .get(guildId)
+        .get(player.guildId)
         .push({
             messageId:
                 message.id,
+
             channelId:
                 channel.id,
-            type: "lyrics"
+
+            type:
+                "lyrics"
         });
 
-    const updateLyrics =
-        async () => {
-            const currentTime =
-                Math.floor(
-                    player.position /
-                        1000
-                );
-
-            const totalLines =
-                lines.length;
-
-            const linesPerSecond =
-                totalLines /
-                songDuration;
-
-            const currentLineIndex =
-                Math.floor(
-                    currentTime *
-                        linesPerSecond
-                );
-
-            const start =
-                Math.max(
-                    0,
-                    currentLineIndex -
-                        3
-                );
-
-            const end =
-                Math.min(
-                    totalLines,
-                    currentLineIndex +
-                        3
-                );
-
-            const visibleLines =
-                lines
-                    .slice(
-                        start,
-                        end
-                    )
-                    .join("\n");
-
-            const updatedContainer =
-                new ContainerBuilder()
-                    .addTextDisplayComponents(
-                        (textDisplay) =>
-                            textDisplay.setContent(
-                                `${
-                                    (
-                                        t.lyrics?.liveTitle ||
-                                        "## 🎵 Live Lyrics: {title}"
-                                    ).replace(
-                                        "{title}",
-                                        track.title
-                                    )
-                                }\n\n` +
-                                visibleLines
-                            )
-                    );
-
-            await message.edit({
-                components: [
-                    updatedContainer,
-                    row
-                ],
-                flags:
-                    MessageFlags.IsComponentsV2
-            });
-        };
-
-    const interval =
-        setInterval(
-            updateLyrics,
-            3000
-        );
-
-    updateLyrics();
-
     const collector =
-        message.createMessageComponentCollector(
-            {
-                time: 300000
-            }
-        );
+        message.createMessageComponentCollector({
+            time: 300000
+        });
 
     collector.on(
         "collect",
-        async (i) => {
-            const deferred =
-                await safeDeferUpdate(
-                    i
-                );
-
+        async (interaction) => {
             if (
-                !deferred &&
-                !i.deferred &&
-                !i.replied
-            ) {
-                return;
-            }
-
-            if (
-                i.customId ===
-                "stopLyrics"
-            ) {
-                clearInterval(
-                    interval
-                );
-
-                await message
-                    .delete()
-                    .catch(() => {});
-            }
-
-            if (
-                i.customId ===
-                "fullLyrics"
-            ) {
-                clearInterval(
-                    interval
-                );
-
-                const fullLyricsContainer =
-                    new ContainerBuilder()
-                        .addTextDisplayComponents(
-                            (textDisplay) =>
-                                textDisplay.setContent(
-                                    `${
-                                        (
-                                            t.lyrics?.fullTitle ||
-                                            "## 🎵 Full Lyrics: {title}"
-                                        ).replace(
-                                            "{title}",
-                                            track.title
-                                        )
-                                    }\n\n` +
-                                    lines.join(
-                                        "\n"
-                                    )
-                                )
-                        );
-
-                const deleteButton =
-                    new ButtonBuilder()
-                        .setCustomId(
-                            "deleteLyrics"
-                        )
-                        .setLabel(
-                            t.lyrics?.deleteButton ||
-                                "Delete"
-                        )
-                        .setStyle(
-                            ButtonStyle.Danger
-                        );
-
-                const deleteRow =
-                    new ActionRowBuilder()
-                        .addComponents(
-                            deleteButton
-                        );
-
-                await message.edit({
-                    components: [
-                        fullLyricsContainer,
-                        deleteRow
-                    ],
-                    flags:
-                        MessageFlags.IsComponentsV2
-                });
-            }
-
-            if (
-                i.customId ===
+                interaction.customId ===
                 "deleteLyrics"
             ) {
-                await message
-                    .delete()
+                await interaction.deferUpdate()
+                    .catch(() => {});
+
+                await message.delete()
                     .catch(() => {});
             }
         }
@@ -3383,500 +3072,18 @@ async function showLyrics(
     collector.on(
         "end",
         () => {
-            clearInterval(
-                interval
-            );
-
-            message
-                .delete()
+            message.delete()
                 .catch(() => {});
         }
     );
 }
 
-function createPlaybackActionRow(
-    disabled,
-    paused = false,
-    loopMode = "none"
-) {
-    const playEmoji =
-        getButtonEmoji("play") ||
-        "▶️";
 
-    const pauseEmoji =
-        getButtonEmoji("pause") ||
-        "⏸️";
+/* =========================================================
+   PROGRESS UPDATES
+========================================================= */
 
-    const skipEmoji =
-        getButtonEmoji("next") ||
-        "⏭️";
-
-    const volumeEmoji =
-        getButtonEmoji("volume") ||
-        "🔊";
-
-    const loopEmoji =
-        getButtonEmoji("settings") ||
-        "🔁";
-
-    const stopEmoji =
-        getButtonEmoji("stop") ||
-        "⏹️";
-
-    const loopEnabled =
-        loopMode !== "none";
-
-    const playbackEmoji =
-        paused
-            ? playEmoji
-            : pauseEmoji;
-
-    const playbackLabel =
-        paused
-            ? "Play"
-            : "Pause";
-
-    const playbackStyle =
-        paused
-            ? ButtonStyle.Success
-            : ButtonStyle.Secondary;
-
-    return new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId(
-                    "togglePlayback"
-                )
-                .setEmoji(
-                    playbackEmoji
-                )
-                .setLabel(
-                    playbackLabel
-                )
-                .setStyle(
-                    playbackStyle
-                )
-                .setDisabled(
-                    disabled
-                ),
-
-            new ButtonBuilder()
-                .setCustomId(
-                    "skipTrack"
-                )
-                .setEmoji(
-                    skipEmoji
-                )
-                .setLabel("Skip")
-                .setStyle(
-                    ButtonStyle.Secondary
-                )
-                .setDisabled(
-                    disabled
-                ),
-
-            new ButtonBuilder()
-                .setCustomId(
-                    "player_volume"
-                )
-                .setEmoji(
-                    volumeEmoji
-                )
-                .setLabel("Volume")
-                .setStyle(
-                    ButtonStyle.Secondary
-                )
-                .setDisabled(
-                    disabled
-                ),
-
-            new ButtonBuilder()
-                .setCustomId(
-                    "loopToggle"
-                )
-                .setEmoji(
-                    loopEmoji
-                )
-                .setLabel("Loop")
-                .setStyle(
-                    loopEnabled
-                        ? ButtonStyle.Success
-                        : ButtonStyle.Secondary
-                )
-                .setDisabled(
-                    disabled
-                ),
-
-            new ButtonBuilder()
-                .setCustomId(
-                    "stopTrack"
-                )
-                .setEmoji(
-                    stopEmoji
-                )
-                .setLabel("Stop")
-                .setStyle(
-                    ButtonStyle.Danger
-                )
-                .setDisabled(
-                    disabled
-                )
-        );
-}
-
-function createManageSongActionRow(
-    disabled
-) {
-    const favoriteEmoji =
-        getButtonEmoji(
-            "welcome"
-        ) || "⭐";
-
-    const addEmoji =
-        getButtonEmoji(
-            "play"
-        ) || "➕";
-
-    const queueEmoji =
-        getButtonEmoji(
-            "queue"
-        ) || "📄";
-
-    const saveEmoji =
-        getButtonEmoji(
-            "folder"
-        ) || "💾";
-
-    const shuffleEmoji =
-        getButtonEmoji(
-            "servers"
-        ) || "🌐";
-
-    return new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId(
-                    "player_favorite"
-                )
-                .setEmoji(
-                    favoriteEmoji
-                )
-                .setLabel(
-                    "Favorite"
-                )
-                .setStyle(
-                    ButtonStyle.Secondary
-                )
-                .setDisabled(
-                    disabled
-                ),
-
-            new ButtonBuilder()
-                .setCustomId(
-                    "player_add_song"
-                )
-                .setEmoji(
-                    addEmoji
-                )
-                .setLabel("Add")
-                .setStyle(
-                    ButtonStyle.Secondary
-                )
-                .setDisabled(
-                    disabled
-                ),
-
-            new ButtonBuilder()
-                .setCustomId(
-                    "player_queue"
-                )
-                .setEmoji(
-                    queueEmoji
-                )
-                .setLabel("Queue")
-                .setStyle(
-                    ButtonStyle.Secondary
-                )
-                .setDisabled(
-                    disabled
-                ),
-
-            new ButtonBuilder()
-                .setCustomId(
-                    "player_save_song"
-                )
-                .setEmoji(
-                    saveEmoji
-                )
-                .setLabel("Save")
-                .setStyle(
-                    ButtonStyle.Secondary
-                )
-                .setDisabled(
-                    disabled
-                ),
-
-            new ButtonBuilder()
-                .setCustomId(
-                    "player_shuffle"
-                )
-                .setEmoji(
-                    shuffleEmoji
-                )
-                .setLabel(
-                    "Shuffle"
-                )
-                .setStyle(
-                    ButtonStyle.Secondary
-                )
-                .setDisabled(
-                    disabled
-                )
-        );
-}
-
-function createFilterRow(
-    disabled,
-    activeFilter = null
-) {
-    const select =
-        new StringSelectMenuBuilder()
-            .setCustomId(
-                "player_filter_select"
-            )
-            .setPlaceholder(
-                activeFilter
-                    ? `Filter: ${activeFilter}`
-                    : "Select audio filter"
-            )
-            .setDisabled(
-                disabled
-            )
-            .addOptions(
-                [
-                    {
-                        label:
-                            "Clear Filters",
-                        value:
-                            "__clear__"
-                    },
-                    ...PLAYER_FILTER_OPTIONS
-                ].map(
-                    (item) => ({
-                        label:
-                            item.label,
-                        value:
-                            item.value,
-                        default:
-                            item.value ===
-                            activeFilter
-                    })
-                )
-            );
-
-    return new ActionRowBuilder()
-        .addComponents(
-            select
-        );
-}
-
-function buildPlayerActionRows(
-    paused,
-    loopMode,
-    activeFilter
-) {
-    return {
-        playbackRow:
-            createPlaybackActionRow(
-                false,
-                paused,
-                loopMode
-            ),
-
-        manageRow:
-            createManageSongActionRow(
-                false
-            ),
-
-        filterRow:
-            createFilterRow(
-                false,
-                activeFilter
-            )
-    };
-}
-
-async function applyFilterByKey(
-    player,
-    selectedFilter
-) {
-    switch (
-        selectedFilter
-    ) {
-        case "karaoke":
-            player.filters.setKaraoke(
-                true
-            );
-            break;
-
-        case "timescale":
-            player.filters.setTimescale(
-                true,
-                {
-                    speed: 1.2,
-                    pitch: 1.2
-                }
-            );
-            break;
-
-        case "tremolo":
-            player.filters.setTremolo(
-                true,
-                {
-                    frequency: 4,
-                    depth: 0.75
-                }
-            );
-            break;
-
-        case "vibrato":
-            player.filters.setVibrato(
-                true,
-                {
-                    frequency: 4,
-                    depth: 0.75
-                }
-            );
-            break;
-
-        case "rotation":
-            player.filters.setRotation(
-                true,
-                {
-                    rotationHz: 0.2
-                }
-            );
-            break;
-
-        case "distortion":
-            player.filters.setDistortion(
-                true,
-                {
-                    sinScale: 1,
-                    cosScale: 1
-                }
-            );
-            break;
-
-        case "channelmix":
-            player.filters.setChannelMix(
-                true,
-                {
-                    leftToLeft: 0.5,
-                    leftToRight: 0.5,
-                    rightToLeft: 0.5,
-                    rightToRight: 0.5
-                }
-            );
-            break;
-
-        case "lowpass":
-            player.filters.setLowPass(
-                true,
-                {
-                    smoothing: 0.5
-                }
-            );
-            break;
-
-        case "bassboost":
-            player.filters.setBassboost(
-                true,
-                {
-                    value: 3
-                }
-            );
-            break;
-
-        case "nightcore":
-            player.filters.setTimescale(
-                true,
-                {
-                    speed: 1.25,
-                    pitch: 1.25,
-                    rate: 1
-                }
-            );
-            break;
-
-        case "daycore":
-            player.filters.setTimescale(
-                true,
-                {
-                    speed: 1,
-                    pitch: 0.8,
-                    rate: 1
-                }
-            );
-            break;
-
-        default:
-            return false;
-    }
-
-    return true;
-}
-
-function createProgressBar(
-    current,
-    total,
-    length = 20
-) {
-    const progress =
-        Math.round(
-            (
-                current /
-                total
-            ) * length
-        );
-
-    const safeProgress =
-        Math.max(
-            0,
-            Math.min(
-                length,
-                progress
-            )
-        );
-
-    const emptyProgress =
-        length -
-        safeProgress;
-
-    const progressText =
-        "▓".repeat(
-            safeProgress
-        );
-
-    const emptyProgressText =
-        "░".repeat(
-            emptyProgress
-        );
-
-    const currentTime =
-        formatDuration(
-            current
-        );
-
-    const totalTime =
-        formatDuration(
-            total
-        );
-
-    return `\`${currentTime}\` ${progressText}${emptyProgressText} \`${totalTime}\``;
-}
-
-async function startProgressUpdates(
+function startProgressUpdates(
     client,
     guildId,
     message,
@@ -3884,25 +3091,25 @@ async function startProgressUpdates(
     track
 ) {
     if (
-        config.lowMemoryMode ===
-        true
+        config.lowMemoryMode === true
     ) {
         return null;
     }
 
-    const boundMessageId =
+    const messageId =
         message.id;
 
-    const boundChannelId =
+    const channelId =
         message.channelId;
 
-    const boundTrackUri =
+    const trackUri =
         track.info.uri;
 
-    const updateInterval =
+    const interval =
         setInterval(
             async () => {
                 try {
+
                     const currentPlayer =
                         client.riffy.players.get(
                             guildId
@@ -3910,11 +3117,10 @@ async function startProgressUpdates(
 
                     if (
                         !currentPlayer ||
-                        currentPlayer !==
-                            player
+                        currentPlayer !== player
                     ) {
                         clearInterval(
-                            updateInterval
+                            interval
                         );
 
                         progressUpdateIntervals.delete(
@@ -3932,12 +3138,10 @@ async function startProgressUpdates(
                     if (
                         !stored ||
                         stored.messageId !==
-                            boundMessageId ||
-                        stored.channelId !==
-                            boundChannelId
+                            messageId
                     ) {
                         clearInterval(
-                            updateInterval
+                            interval
                         );
 
                         progressUpdateIntervals.delete(
@@ -3948,14 +3152,12 @@ async function startProgressUpdates(
                     }
 
                     if (
-                        !player ||
                         !player.current ||
-                        player.current.info
-                            .uri !==
-                            boundTrackUri
+                        player.current.info.uri !==
+                            trackUri
                     ) {
                         clearInterval(
-                            updateInterval
+                            interval
                         );
 
                         progressUpdateIntervals.delete(
@@ -3965,58 +3167,92 @@ async function startProgressUpdates(
                         return;
                     }
 
-                    const currentPosition =
-                        player.position ||
-                        0;
+                    const channel =
+                        client.channels.cache.get(
+                            channelId
+                        );
 
-                    const totalDuration =
-                        track.info.length ||
-                        1;
+                    if (!channel) return;
+
+                    const msg =
+                        await channel.messages
+                            .fetch(messageId)
+                            .catch(() => null);
+
+                    if (!msg) return;
+
+                    const position =
+                        player.position || 0;
+
+                    const total =
+                        track.info.length || 1;
 
                     const progress =
                         Math.min(
                             100,
                             Math.round(
                                 (
-                                    currentPosition /
-                                    totalDuration
+                                    position /
+                                    total
                                 ) * 100
                             )
                         );
 
                     const progressBar =
-                        createProgressBar(
-                            currentPosition,
-                            totalDuration
-                        );
-
-                    const lang =
-                        await getLang(
-                            guildId
-                        ).catch(() => ({
-                            console: {
-                                player: {}
-                            }
-                        }));
-
-                    const t =
-                        lang.console
-                            ?.player ||
-                        {};
+                        config.showProgressBar !== false
+                            ? createProgressBar(
+                                position,
+                                total
+                            )
+                            : null;
 
                     const requester =
                         requesters.get(
-                            track.info.uri
+                            trackUri
                         ) ||
-                        (
-                            t.trackInfo
-                                ?.unknown ||
-                            "Unknown"
+                        track.info.requester ||
+                        "Unknown";
+
+                    const cached =
+                        getTrackMediaCache(
+                            guildId,
+                            trackUri
                         );
 
-                    const commandMentionMap =
-                        await getCommandMentionMap(
-                            client
+                    let thumbnail =
+                        cached?.mediaUrl ||
+                        track.info.thumbnail ||
+                        null;
+
+                    if (
+                        thumbnail &&
+                        thumbnail.startsWith(
+                            "attachment://"
+                        )
+                    ) {
+                        thumbnail =
+                            track.info.thumbnail ||
+                            null;
+                    }
+
+                    const embed =
+                        buildNowPlayingEmbed(
+                            track,
+                            requester,
+                            {},
+                            progressBar,
+                            progress,
+                            thumbnail,
+                            {
+                                paused:
+                                    player.paused,
+
+                                loop:
+                                    player.loop,
+
+                                queueLength:
+                                    player.queue.length
+                            }
                         );
 
                     const actionRows =
@@ -4028,134 +3264,41 @@ async function startProgressUpdates(
                             ) || null
                         );
 
-                    const channel =
-                        client.channels.cache.get(
-                            stored.channelId
-                        );
-
-                    if (!channel) {
-                        return;
-                    }
-
-                    const msg =
-                        await channel.messages
-                            .fetch(
-                                stored.messageId
-                            )
-                            .catch(
-                                () => null
-                            );
-
-                    if (!msg) {
-                        return;
-                    }
-
-                    /*
-                     * CRITICAL FIX:
-                     *
-                     * Get the actual CDN URL.
-                     *
-                     * NEVER create:
-                     *
-                     * attachment://song-banner.png
-                     */
-                    let mediaUrl =
-                        null;
-
-                    const cachedMedia =
-                        useGeneratedSongCard
-                            ? getTrackMediaCache(
-                                guildId,
-                                track.info.uri
-                            )
-                            : null;
-
-                    if (
-                        cachedMedia?.mediaUrl &&
-                        !cachedMedia.mediaUrl.startsWith(
-                            "attachment://"
-                        )
-                    ) {
-                        mediaUrl =
-                            cachedMedia.mediaUrl;
-                    }
-
-                    /*
-                     * If the cache doesn't have it,
-                     * recover the original attachment
-                     * URL from the Discord message.
-                     */
-                    if (!mediaUrl) {
-                        const existingAttachment =
-                            msg.attachments?.first();
-
-                        if (
-                            existingAttachment?.url
-                        ) {
-                            mediaUrl =
-                                existingAttachment.url;
-
-                            setTrackMediaCache(
-                                guildId,
-                                track.info.uri,
-                                mediaUrl
-                            );
-                        }
-                    }
-
-                    const nowPlayingContainer =
-                        buildNowPlayingContainer(
-                            track,
-                            requester,
-                            t,
-                            config.showProgressBar !==
-                                false
-                                ? progressBar
-                                : null,
-                            progress,
-                            mediaUrl,
-                            actionRows,
-                            {
-                                paused:
-                                    player.paused,
-                                loop:
-                                    player.loop,
-                                currentPosition,
-                                queueLength:
-                                    player.queue.length,
-                                commandMentionMap
-                            }
-                        );
-
-                    /*
-                     * NO files array here.
-                     *
-                     * The original attachment already
-                     * exists on the message.
-                     *
-                     * We simply use its CDN URL.
-                     */
                     await msg.edit({
+                        embeds: [embed],
+
                         components: [
-                            nowPlayingContainer
-                        ],
-                        flags:
-                            MessageFlags.IsComponentsV2
-                    });
+                            actionRows.playbackRow,
+                            actionRows.manageRow,
+                            actionRows.filterRow
+                        ]
+                    }).catch(() => {});
+
                 } catch (error) {
-                    console.warn(
-                        "[ PLAYER ] Progress update error:",
-                        error.message
+                    clearInterval(
+                        interval
+                    );
+
+                    progressUpdateIntervals.delete(
+                        guildId
                     );
                 }
+
             },
             15000
         );
 
-    return updateInterval;
+    return interval;
 }
+
+
+/* =========================================================
+   EXPORTS
+========================================================= */
 
 module.exports = {
     initializePlayer,
-    cleanupTrackMessages
+    cleanupTrackMessages,
+    refreshNowPlayingPanel,
+    showLyrics
 };
