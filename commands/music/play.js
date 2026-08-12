@@ -731,44 +731,78 @@ module.exports = {
             } else {
 
                 /* =================================================
-                   NORMAL SEARCH / URL
-                ================================================= */
+               NORMAL SEARCH / YOUTUBE URL
+            ================================================= */
 
-                let resolve;
+            let resolve = null;
 
-                try {
+            /*
+             * Detect YouTube URLs.
+             *
+             * Supports:
+             * https://www.youtube.com/watch?v=XXXX
+             * https://youtu.be/XXXX
+             * https://youtube.com/shorts/XXXX
+             * https://www.youtube.com/live/XXXX
+             */
 
-                    resolve =
-                        await client.riffy.resolve({
-                            query,
-                            requester:
-                                interaction.user.username
-                        });
+            const isYouTubeUrl =
+                /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i
+                    .test(query);
 
-                } catch (error) {
 
-                    const msg =
-                        error?.message || "";
+            /*
+             * -------------------------------------------------
+             * FIRST ATTEMPT
+             * -------------------------------------------------
+             *
+             * Let Lavalink/Riffy resolve the original query.
+             *
+             * This keeps normal searches and working URLs
+             * exactly as they were.
+             */
 
-                    if (
-                        msg.includes(
-                            "fetch failed"
-                        ) ||
-                        msg.includes(
-                            "No nodes are available"
-                        ) ||
-                        error?.cause?.code ===
-                            "ECONNREFUSED"
-                    ) {
+            try {
 
-                        await nodeManager
-                            .reconnectNodesNow?.(
-                                5000
-                            )
-                            .catch(() => {});
+                resolve =
+                    await client.riffy.resolve({
+                        query,
+                        requester:
+                            interaction.user.username
+                    });
 
-                        await nodeManager
-                            .ensureNodeAvailable();
+            } catch (error) {
+
+                console.error(
+                    "[PLAY] Initial resolve failed:",
+                    error?.message ||
+                    error
+                );
+
+                const msg =
+                    error?.message || "";
+
+                if (
+                    msg.includes(
+                        "fetch failed"
+                    ) ||
+                    msg.includes(
+                        "No nodes are available"
+                    ) ||
+                    error?.cause?.code ===
+                        "ECONNREFUSED"
+                ) {
+
+                    await nodeManager
+                        .reconnectNodesNow?.(
+                            5000
+                        )
+                        .catch(() => {});
+
+                    await nodeManager
+                        .ensureNodeAvailable();
+
+                    try {
 
                         resolve =
                             await client.riffy.resolve({
@@ -777,34 +811,321 @@ module.exports = {
                                     interaction.user.username
                             });
 
-                    } else {
+                    } catch (retryError) {
 
-                        throw error;
+                        console.error(
+                            "[PLAY] Resolve retry failed:",
+                            retryError?.message ||
+                            retryError
+                        );
+
+                        resolve = null;
                     }
                 }
+            }
 
-                if (
+
+            /*
+             * -------------------------------------------------
+             * YOUTUBE URL FALLBACK
+             * -------------------------------------------------
+             *
+             * If Lavalink could not resolve the URL directly,
+             * obtain the YouTube video's title and search for
+             * that title instead.
+             *
+             * This is useful when:
+             *
+             *     SONG NAME  -> works
+             *
+             * but:
+             *
+             *     YOUTUBE URL -> No Results
+             */
+
+            if (
+                isYouTubeUrl &&
+                (
                     !resolve ||
-                    typeof resolve !==
-                        "object" ||
                     !Array.isArray(
                         resolve.tracks
-                    )
+                    ) ||
+                    resolve.tracks.length === 0
+                )
+            ) {
+
+                console.log(
+                    "[PLAY] YouTube URL could not be resolved directly."
+                );
+
+                console.log(
+                    "[PLAY] Trying YouTube title fallback..."
+                );
+
+
+                try {
+
+                    /*
+                     * Use YouTube's public oEmbed endpoint.
+                     *
+                     * No API key is required.
+                     */
+
+                    const encodedUrl =
+                        encodeURIComponent(
+                            query
+                        );
+
+                    const response =
+                        await fetch(
+                            `https://www.youtube.com/oembed?url=${encodedUrl}&format=json`,
+                            {
+                                headers: {
+                                    "User-Agent":
+                                        "Mozilla/5.0"
+                                }
+                            }
+                        );
+
+
+                    if (
+                        response.ok
+                    ) {
+
+                        const data =
+                            await response.json();
+
+
+                        const youtubeTitle =
+                            data?.title?.trim();
+
+
+                        if (
+                            youtubeTitle
+                        ) {
+
+                            console.log(
+                                `[PLAY] YouTube title found: ${youtubeTitle}`
+                            );
+
+
+                            /*
+                             * Search the title through Riffy.
+                             *
+                             * This is the same type of query
+                             * that you said works manually.
+                             */
+
+                            resolve =
+                                await client.riffy.resolve({
+                                    query:
+                                        youtubeTitle,
+
+                                    requester:
+                                        interaction.user.username
+                                });
+
+
+                            /*
+                             * If title search works,
+                             * use the result.
+                             */
+
+                            if (
+                                resolve &&
+                                Array.isArray(
+                                    resolve.tracks
+                                ) &&
+                                resolve.tracks.length > 0
+                            ) {
+
+                                console.log(
+                                    `[PLAY] YouTube URL resolved through title search.`
+                                );
+
+                            } else {
+
+                                console.log(
+                                    `[PLAY] Title search returned no tracks.`
+                                );
+                            }
+
+                        } else {
+
+                            console.log(
+                                "[PLAY] YouTube oEmbed returned no title."
+                            );
+                        }
+
+                    } else {
+
+                        console.log(
+                            `[PLAY] YouTube oEmbed HTTP ${response.status}`
+                        );
+                    }
+
+                } catch (fallbackError) {
+
+                    console.error(
+                        "[PLAY] YouTube title fallback failed:",
+                        fallbackError?.message ||
+                        fallbackError
+                    );
+                }
+            }
+
+
+            /*
+             * -------------------------------------------------
+             * FINAL VALIDATION
+             * -------------------------------------------------
+             */
+
+            if (
+                !resolve ||
+                typeof resolve !==
+                    "object" ||
+                !Array.isArray(
+                    resolve.tracks
+                )
+            ) {
+
+                return sendErrorResponse(
+                    interaction,
+
+                    t.invalidResponse.title +
+                    "\n\n" +
+                    t.invalidResponse.message +
+                    "\n" +
+                    t.invalidResponse.note,
+
+                    5000
+                );
+            }
+
+
+            /* =============================================
+               PLAYLIST
+            ============================================= */
+
+            if (
+                resolve.loadType ===
+                "playlist"
+            ) {
+
+                isPlaylist = true;
+
+                for (
+                    const track
+                    of resolve.tracks
                 ) {
+
+                    if (!track?.info) {
+                        continue;
+                    }
+
+
+                    track.info.requester =
+                        interaction.user.username;
+
+
+                    player.queue.add(
+                        track
+                    );
+
+
+                    if (
+                        track.info.uri
+                    ) {
+
+                        requesters.set(
+                            track.info.uri,
+                            interaction.user.username
+                        );
+                    }
+
+
+                    queuedTracks++;
+                }
+
+            }
+
+
+            /* =============================================
+               SINGLE TRACK / SEARCH
+            ============================================= */
+
+            else if (
+                resolve.loadType ===
+                    "search" ||
+                resolve.loadType ===
+                    "track"
+            ) {
+
+                const track =
+                    resolve.tracks[0];
+
+
+                if (!track?.info) {
 
                     return sendErrorResponse(
                         interaction,
 
-                        t.invalidResponse.title +
+                        t.noResults.title +
                         "\n\n" +
-                        t.invalidResponse.message +
+                        t.noResults.message +
                         "\n" +
-                        t.invalidResponse.note,
+                        t.noResults.note,
 
                         5000
                     );
                 }
 
+
+                track.info.requester =
+                    interaction.user.username;
+
+
+                player.queue.add(
+                    track
+                );
+
+
+                if (
+                    track.info.uri
+                ) {
+
+                    requesters.set(
+                        track.info.uri,
+                        interaction.user.username
+                    );
+                }
+
+
+                queuedTracks = 1;
+
+            }
+
+
+            /* =============================================
+               UNKNOWN LOAD TYPE
+            ============================================= */
+
+            else {
+
+                return sendErrorResponse(
+                    interaction,
+
+                    t.noResults.title +
+                    "\n\n" +
+                    t.noResults.message +
+                    "\n" +
+                    t.noResults.note,
+
+                    5000
+                );
+            }
+        }
                 /* =============================================
                    PLAYLIST
                 ============================================= */
