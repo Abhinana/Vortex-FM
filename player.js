@@ -1576,9 +1576,7 @@ client.riffy.on(
 
 client.riffy.on(
     "trackEnd",
-    async (
-        player
-    ) => {
+    async (player) => {
 
         if (!player?.guildId) {
             return;
@@ -1589,9 +1587,9 @@ client.riffy.on(
             player.guildId;
 
 
-        /*
-         * Get the track that was playing.
-         */
+        /* =================================================
+           GET FINISHED TRACK
+        ================================================= */
 
         const finishedTrack =
             finishedTrackInfo.get(
@@ -1604,23 +1602,22 @@ client.riffy.on(
             "Unknown Title";
 
 
-        /*
-         * Stop progress updates.
-         */
+        /* =================================================
+           STOP PROGRESS UPDATES
+        ================================================= */
 
         clearProgressUpdates(
             guildId
         );
-
 
         clearTrackMediaCache(
             guildId
         );
 
 
-        /*
-         * Find the Discord channel.
-         */
+        /* =================================================
+           FIND DISCORD CHANNEL
+        ================================================= */
 
         const channel =
             client.channels.cache.get(
@@ -1633,39 +1630,139 @@ client.riffy.on(
         }
 
 
-        /*
-         * SEND PERMANENT FINISHED MESSAGE
-         */
+        /* =================================================
+           DELETE ONLY THE CURRENT NOW PLAYING CARD
+        ================================================= */
 
-        try {
-
-            await channel.send({
-                content:
-                    `➕ Finished playing ${title}`
-            });
-
-            console.log(
-                `[ LAVALINK ] Finished playing: ${title}`
+        const nowPlayingMessage =
+            nowPlayingMessages.get(
+                guildId
             );
 
-        } catch (error) {
 
-            console.error(
-                "Finished playing message error:",
-                error
+        if (
+            nowPlayingMessage
+        ) {
+
+            try {
+
+                await nowPlayingMessage
+                    .delete();
+
+                console.log(
+                    `[ LAVALINK ] Deleted Now Playing message for ${guildId}`
+                );
+
+            } catch (error) {
+
+                console.error(
+                    "[ LAVALINK ] Could not delete Now Playing message:",
+                    error.message
+                );
+            }
+
+
+            nowPlayingMessages.delete(
+                guildId
             );
         }
 
 
-        /*
-         * IMPORTANT:
-         *
-         * Do NOT delete the previous player message.
-         *
-         * cleanupTrackMessages() has also been changed
-         * so it does not delete Discord messages.
-         */
+        /* =================================================
+           ALSO CLEAN TRACK MESSAGE REFERENCES
+           WITHOUT DELETING FINISHED MESSAGES
+        ================================================= */
 
+        guildTrackMessages.set(
+            guildId,
+            []
+        );
+
+
+       /* =================================================
+   FINISHED PLAYING MESSAGE
+================================================= */
+
+let youtubeUrl = null;
+
+if (
+    finishedTrack?.info?.uri &&
+    (
+        finishedTrack.info.uri.includes("youtube.com") ||
+        finishedTrack.info.uri.includes("youtu.be")
+    )
+) {
+
+    youtubeUrl =
+        finishedTrack.info.uri;
+
+} else if (
+    finishedTrack?.info?.identifier
+) {
+
+    youtubeUrl =
+        `https://www.youtube.com/watch?v=${finishedTrack.info.identifier}`;
+}
+
+
+/*
+ * Make the finished song title clickable.
+ */
+
+const finishedTitle =
+    youtubeUrl
+        ? `[${title}](${youtubeUrl})`
+        : title;
+
+
+/*
+ * Components V2 container.
+ *
+ * setAccentColor() creates the colored
+ * vertical border on the left.
+ */
+
+const finishedContainer =
+    new ContainerBuilder()
+        .setAccentColor(
+            0x2B8CFF
+        )
+        .addTextDisplayComponents(
+            text =>
+                text.setContent(
+                    `➕ Finished playing ${finishedTitle}`
+                )
+        );
+
+
+try {
+
+    await channel.send({
+
+        components: [
+            finishedContainer
+        ],
+
+        flags:
+            MessageFlags.IsComponentsV2
+
+    });
+
+    console.log(
+        `[ LAVALINK ] Finished playing: ${title}`
+    );
+
+} catch (error) {
+
+    console.error(
+        "[ LAVALINK ] Failed to send finished message:",
+        error
+    );
+}
+
+        /* =================================================
+           CHECK QUEUE
+        ================================================= */
 
         const settings =
             await autoplayCollection
@@ -1689,6 +1786,10 @@ client.riffy.on(
             );
 
 
+        /* =================================================
+           CLEANUP WHEN PLAYER HAS NOTHING LEFT
+        ================================================= */
+
         if (!hasNext) {
 
             await cleanupTrackMessages(
@@ -1699,8 +1800,6 @@ client.riffy.on(
 
     }
 );
-
-
     /* ========================================================
        QUEUE END
     ======================================================== */
@@ -1918,7 +2017,7 @@ async function cleanupPreviousTrackMessages(
 }
 
 /* ============================================================
-   CLEANUP ALL TRACK MESSAGES
+   CLEANUP ALL TRACK STATE
 ============================================================ */
 
 async function cleanupTrackMessages(
@@ -1934,20 +2033,10 @@ async function cleanupTrackMessages(
         guildId
     );
 
+
     clearProgressUpdates(
         guildId
     );
-
-
-    /*
-     * IMPORTANT:
-     *
-     * DO NOT DELETE DISCORD MESSAGES HERE.
-     *
-     * Previous Now Playing messages and
-     * Finished Playing messages must remain
-     * permanently in the channel.
-     */
 
 
     guildTrackMessages.set(
@@ -1959,8 +2048,12 @@ async function cleanupTrackMessages(
     nowPlayingMessages.delete(
         guildId
     );
-}
 
+
+    finishedTrackInfo.delete(
+        guildId
+    );
+}
 /* ============================================================
    FORMAT DURATION
 ============================================================ */
