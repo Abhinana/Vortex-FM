@@ -730,7 +730,7 @@ module.exports = {
 
             } else {
 
-               /* =================================================
+ /* =================================================
    NORMAL SEARCH / URL
 ================================================= */
 
@@ -741,17 +741,17 @@ try {
     /*
      * First try the original query.
      *
-     * This supports:
+     * Supports:
      * - YouTube URLs
      * - YouTube searches
-     * - other Lavalink-supported queries
+     * - Lavalink-supported URLs
+     * - normal song names
      */
-    resolve =
-        await client.riffy.resolve({
-            query,
-            requester:
-                interaction.user.username
-        });
+
+    resolve = await client.riffy.resolve({
+        query,
+        requester: interaction.user.username
+    });
 
 } catch (error) {
 
@@ -776,12 +776,10 @@ try {
         await nodeManager
             .ensureNodeAvailable();
 
-        resolve =
-            await client.riffy.resolve({
-                query,
-                requester:
-                    interaction.user.username
-            });
+        resolve = await client.riffy.resolve({
+            query,
+            requester: interaction.user.username
+        });
 
     } else {
 
@@ -791,13 +789,19 @@ try {
 
 
 /* =================================================
-   YOUTUBE URL TITLE FALLBACK
+   YOUTUBE URL FALLBACK
 ================================================= */
 
 const isYouTubeUrl =
     /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i
         .test(query);
 
+
+/*
+ * If Lavalink could not resolve the YouTube URL,
+ * ask YouTube for the video's title and search
+ * using that title.
+ */
 
 if (
     isYouTubeUrl &&
@@ -818,24 +822,23 @@ if (
 
     try {
 
-        const response =
-            await fetch(
-                `https://www.youtube.com/oembed?url=${encodeURIComponent(query)}&format=json`,
-                {
-                    headers: {
-                        "User-Agent":
-                            "Mozilla/5.0"
-                    }
+        const response = await fetch(
+            `https://www.youtube.com/oembed?url=${encodeURIComponent(query)}&format=json`,
+            {
+                headers: {
+                    "User-Agent":
+                        "Mozilla/5.0"
                 }
-            );
+            }
+        );
 
         if (response.ok) {
 
-            const data =
+            const youtubeData =
                 await response.json();
 
             const youtubeTitle =
-                data?.title?.trim();
+                youtubeData?.title?.trim();
 
             if (youtubeTitle) {
 
@@ -845,13 +848,10 @@ if (
 
                 resolve =
                     await client.riffy.resolve({
-                        query:
-                            youtubeTitle,
-
+                        query: youtubeTitle,
                         requester:
                             interaction.user.username
                     });
-
             }
 
         } else {
@@ -906,8 +906,7 @@ if (
     isPlaylist = true;
 
     for (
-        const track
-        of resolve.tracks
+        const track of resolve.tracks
     ) {
 
         if (!track?.info) {
@@ -921,7 +920,9 @@ if (
             track
         );
 
-        if (track.info.uri) {
+        if (
+            track.info.uri
+        ) {
 
             requesters.set(
                 track.info.uri,
@@ -968,7 +969,9 @@ else if (
         track
     );
 
-    if (track.info.uri) {
+    if (
+        track.info.uri
+    ) {
 
         requesters.set(
             track.info.uri,
@@ -977,12 +980,11 @@ else if (
     }
 
     queuedTracks = 1;
-
 }
 
 
 /* =================================================
-   NO RESULTS
+   UNKNOWN LOAD TYPE
 ================================================= */
 
 else {
@@ -999,234 +1001,6 @@ else {
         5000
     );
 }
-
-            /* =============================================
-               PLAYLIST
-            ============================================= */
-
-            if (
-                resolve.loadType ===
-                "playlist"
-            ) {
-
-                isPlaylist = true;
-
-                for (
-                    const track
-                    of resolve.tracks
-                ) {
-
-                    if (!track?.info) {
-                        continue;
-                    }
-
-
-                    track.info.requester =
-                        interaction.user.username;
-
-
-                    player.queue.add(
-                        track
-                    );
-
-
-                    if (
-                        track.info.uri
-                    ) {
-
-                        requesters.set(
-                            track.info.uri,
-                            interaction.user.username
-                        );
-                    }
-
-
-                    queuedTracks++;
-                }
-
-            }
-
-
-            /* =============================================
-               SINGLE TRACK / SEARCH
-            ============================================= */
-
-            else if (
-                resolve.loadType ===
-                    "search" ||
-                resolve.loadType ===
-                    "track"
-            ) {
-
-                const track =
-                    resolve.tracks[0];
-
-
-                if (!track?.info) {
-
-                    return sendErrorResponse(
-                        interaction,
-
-                        t.noResults.title +
-                        "\n\n" +
-                        t.noResults.message +
-                        "\n" +
-                        t.noResults.note,
-
-                        5000
-                    );
-                }
-
-
-                track.info.requester =
-                    interaction.user.username;
-
-
-                player.queue.add(
-                    track
-                );
-
-
-                if (
-                    track.info.uri
-                ) {
-
-                    requesters.set(
-                        track.info.uri,
-                        interaction.user.username
-                    );
-                }
-
-
-                queuedTracks = 1;
-
-            }
-
-
-            /* =============================================
-               UNKNOWN LOAD TYPE
-            ============================================= */
-
-            else {
-
-                return sendErrorResponse(
-                    interaction,
-
-                    t.noResults.title +
-                    "\n\n" +
-                    t.noResults.message +
-                    "\n" +
-                    t.noResults.note,
-
-                    5000
-                );
-            }
-        }
-                /* =============================================
-                   PLAYLIST
-                ============================================= */
-
-                if (
-                    resolve.loadType ===
-                    "playlist"
-                ) {
-
-                    isPlaylist = true;
-
-                    for (
-                        const track
-                        of resolve.tracks
-                    ) {
-
-                        if (!track?.info) {
-                            continue;
-                        }
-
-                        track.info.requester =
-                            interaction.user.username;
-
-                        player.queue.add(
-                            track
-                        );
-
-                        if (
-                            track.info.uri
-                        ) {
-
-                            requesters.set(
-                                track.info.uri,
-                                interaction.user.username
-                            );
-                        }
-
-                        queuedTracks++;
-                    }
-
-                }
-
-                /* =============================================
-                   SINGLE TRACK / SEARCH
-                ============================================= */
-
-                else if (
-                    resolve.loadType ===
-                        "search" ||
-                    resolve.loadType ===
-                        "track"
-                ) {
-
-                    const track =
-                        resolve.tracks[0];
-
-                    if (!track?.info) {
-
-                        return sendErrorResponse(
-                            interaction,
-
-                            t.noResults.title +
-                            "\n\n" +
-                            t.noResults.message +
-                            "\n" +
-                            t.noResults.note,
-
-                            5000
-                        );
-                    }
-
-                    track.info.requester =
-                        interaction.user.username;
-
-                    player.queue.add(
-                        track
-                    );
-
-                    if (
-                        track.info.uri
-                    ) {
-
-                        requesters.set(
-                            track.info.uri,
-                            interaction.user.username
-                        );
-                    }
-
-                    queuedTracks = 1;
-
-                } else {
-
-                    return sendErrorResponse(
-                        interaction,
-
-                        t.noResults.title +
-                        "\n\n" +
-                        t.noResults.message +
-                        "\n" +
-                        t.noResults.note,
-
-                        5000
-                    );
-                }
-            }
 
             /* =================================================
                SPOTIFY TRACKS / PLAYLIST TRACKS
