@@ -75,6 +75,8 @@ const progressUpdateIntervals = new Map();
 const guildActiveFilter = new Map();
 const guildTrackMediaCache = new Map();
 
+const finishedTrackInfo = new Map();
+
 const musicCard = new EnhancedMusicCard();
 
 const useGeneratedSongCard =
@@ -85,8 +87,6 @@ const enableVoiceChannelIdPatch =
 
 const voiceDebug =
     config.voiceDebug === true;
-
-
 /* ============================================================
    COMMAND MENTION CACHE
 ============================================================ */
@@ -1097,106 +1097,117 @@ async function initializePlayer(client) {
     );
 
 
-    /* ========================================================
-       TRACK START
-    ======================================================== */
+   /* ========================================================
+   TRACK START
+======================================================== */
 
-    client.riffy.on(
-        "trackStart",
-        async (player, track) => {
+client.riffy.on(
+    "trackStart",
+    async (player, track) => {
 
-            if (
-                !track ||
-                !track.info
-            ) {
+        if (
+            !track ||
+            !track.info
+        ) {
 
-                console.error(
-                    `[ LAVALINK ] Track is null or missing info`
-                );
+            console.error(
+                `[ LAVALINK ] Track is null or missing info`
+            );
 
-                return;
-            }
+            return;
+        }
 
 
-            await new Promise(
-                resolve =>
-                    setTimeout(
-                        resolve,
-                        200
-                    )
+        await new Promise(
+            resolve =>
+                setTimeout(
+                    resolve,
+                    200
+                )
+        );
+
+
+        const currentPlayer =
+            client.riffy.players.get(
+                player.guildId
             );
 
 
-            const currentPlayer =
-                client.riffy.players.get(
+        if (
+            !currentPlayer ||
+            currentPlayer !== player ||
+            player.destroyed
+        ) {
+
+            console.error(
+                `[ LAVALINK ] Player invalid for guild ${player.guildId}`
+            );
+
+            return;
+        }
+
+
+        if (
+            client.statusManager &&
+            track.info.title
+        ) {
+
+            await client.statusManager
+                .onTrackStart(
                     player.guildId
+                )
+                .catch(() => {});
+        }
+
+
+        const channel =
+            client.channels.cache.get(
+                player.textChannel
+            );
+
+
+        if (!channel) {
+
+            console.error(
+                `[ LAVALINK ] Channel not found for guild ${player.guildId}`
+            );
+
+            return;
+        }
+
+
+        const guildId =
+            player.guildId;
+
+
+        /* =========================================================
+           STORE CURRENT TRACK FOR TRACK END
+        ========================================================= */
+
+        finishedTrackInfo.set(
+            guildId,
+            track
+        );
+
+
+        const trackUri =
+            track.info.uri;
+
+
+        const requester =
+            requesters.get(trackUri);
+
+
+        const lang =
+            await getLang(guildId)
+                .catch(() =>
+                    getLangSync()
                 );
 
 
-            if (
-                !currentPlayer ||
-                currentPlayer !== player ||
-                player.destroyed
-            ) {
-
-                console.error(
-                    `[ LAVALINK ] Player invalid for guild ${player.guildId}`
-                );
-
-                return;
-            }
-
-
-            if (
-                client.statusManager &&
-                track.info.title
-            ) {
-
-                await client.statusManager
-                    .onTrackStart(
-                        player.guildId
-                    )
-                    .catch(() => {});
-            }
-
-
-            const channel =
-                client.channels.cache.get(
-                    player.textChannel
-                );
-
-
-            if (!channel) {
-
-                console.error(
-                    `[ LAVALINK ] Channel not found for guild ${player.guildId}`
-                );
-
-                return;
-            }
-
-
-            const guildId =
-                player.guildId;
-
-            const trackUri =
-                track.info.uri;
-
-
-            const requester =
-                requesters.get(trackUri);
-
-
-            const lang =
-                await getLang(guildId)
-                    .catch(() =>
-                        getLangSync()
-                    );
-
-
-            const t =
-                lang.console?.player ||
-                {};
+        const t =
+            lang.console?.player ||
+            {};
 
 
             /* =================================================
@@ -1559,63 +1570,83 @@ async function initializePlayer(client) {
     );
 
 
-   /* =====================================================
+  /* =====================================================
    TRACK END
 ===================================================== */
 
 client.riffy.on(
     "trackEnd",
     async (
-        player,
-        track
+        player
     ) => {
 
         if (!player?.guildId) {
             return;
         }
 
+
         const guildId =
             player.guildId;
+
+
+        /*
+         * Get the track that was playing.
+         */
+
+        const finishedTrack =
+            finishedTrackInfo.get(
+                guildId
+            );
+
+
+        const title =
+            finishedTrack?.info?.title ||
+            "Unknown Title";
+
+
+        /*
+         * Stop progress updates.
+         */
 
         clearProgressUpdates(
             guildId
         );
 
+
         clearTrackMediaCache(
             guildId
         );
+
+
+        /*
+         * Find the Discord channel.
+         */
 
         const channel =
             client.channels.cache.get(
                 player.textChannel
             );
 
+
         if (!channel) {
             return;
         }
 
+
         /*
-         * IMPORTANT:
-         * Do NOT delete the Now Playing message here.
-         *
-         * The finished-track notification is intentionally
-         * permanent and is NOT sent through sendTemporaryMessage().
+         * SEND PERMANENT FINISHED MESSAGE
          */
 
         try {
 
-            const finishedTrack =
-                track ||
-                player.current;
-
-            const title =
-                finishedTrack?.info?.title ||
-                "Unknown Title";
-
             await channel.send({
                 content:
-                    `➕ **Finished playing ${title}**`
+                    `➕ Finished playing ${title}`
             });
+
+            console.log(
+                `[ LAVALINK ] Finished playing: ${title}`
+            );
 
         } catch (error) {
 
@@ -1624,45 +1655,50 @@ client.riffy.on(
                 error
             );
         }
-    }
-);
 
-    /* ========================================================
-       PLAYER DISCONNECT
-    ======================================================== */
 
-    client.riffy.on(
-        "playerDisconnect",
-        async (player) => {
+        /*
+         * IMPORTANT:
+         *
+         * Do NOT delete the previous player message.
+         *
+         * cleanupTrackMessages() has also been changed
+         * so it does not delete Discord messages.
+         */
 
-            const guildId =
-                player.guildId;
 
-            clearTrackMediaCache(
-                guildId
+        const settings =
+            await autoplayCollection
+                .findOne({
+                    guildId
+                })
+                .catch(
+                    () => null
+                );
+
+
+        const hasNext =
+            (
+                player.queue?.length >
+                0
+            ) ||
+            player.loop === "queue" ||
+            player.loop === "track" ||
+            Boolean(
+                settings?.autoplay
             );
 
-            clearProgressUpdates(
-                guildId
-            );
 
-
-            if (client.statusManager) {
-
-                await client.statusManager
-                    .onPlayerDisconnect(
-                        guildId
-                    )
-                    .catch(() => {});
-            }
-
+        if (!hasNext) {
 
             await cleanupTrackMessages(
                 client,
                 player
             );
         }
-    );
+
+    }
+);
 
 
     /* ========================================================
