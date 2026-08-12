@@ -1570,35 +1570,25 @@ client.riffy.on(
     );
 
 
-/* ============================================================
+/* =====================================================
    TRACK END
-============================================================ */
+===================================================== */
 
 client.riffy.on(
     "trackEnd",
-    async (player, track) => {
+    async (
+        player,
+        track
+    ) => {
 
         try {
 
-            if (!player || !player.guildId) {
-
-                console.log(
-                    "[TRACK END] Invalid player."
-                );
-
+            if (!player?.guildId) {
                 return;
             }
 
             const guildId =
                 player.guildId;
-
-            console.log(
-                `[TRACK END] Fired for guild ${guildId}`
-            );
-
-            /* =================================================
-               GET FINISHED TRACK
-            ================================================= */
 
             const finishedTrack =
                 track ||
@@ -1609,12 +1599,12 @@ client.riffy.on(
                 "Unknown Title";
 
             console.log(
-                `[TRACK END] Finished: ${title}`
+                `[TRACK END] Fired: ${title}`
             );
 
-            /* =================================================
+            /* =============================================
                STOP PROGRESS
-            ================================================= */
+            ============================================= */
 
             clearProgressUpdates(
                 guildId
@@ -1624,22 +1614,22 @@ client.riffy.on(
                 guildId
             );
 
-            /* =================================================
-               DELETE OLD NOW PLAYING CARD
-            ================================================= */
+            /* =============================================
+               DELETE ONLY NOW PLAYING CARD
+            ============================================= */
 
-            const nowPlayingInfo =
+            const nowPlaying =
                 nowPlayingMessages.get(
                     guildId
                 );
 
-            if (nowPlayingInfo) {
+            if (nowPlaying) {
 
                 try {
 
                     const oldChannel =
                         client.channels.cache.get(
-                            nowPlayingInfo.channelId
+                            nowPlaying.channelId
                         );
 
                     if (oldChannel) {
@@ -1647,7 +1637,7 @@ client.riffy.on(
                         const oldMessage =
                             await oldChannel.messages
                                 .fetch(
-                                    nowPlayingInfo.messageId
+                                    nowPlaying.messageId
                                 )
                                 .catch(
                                     () => null
@@ -1661,7 +1651,7 @@ client.riffy.on(
                                     error => {
 
                                         console.error(
-                                            "[TRACK END] Failed to delete old Now Playing card:",
+                                            "[TRACK END] Delete failed:",
                                             error?.message ||
                                             error
                                         );
@@ -1670,7 +1660,7 @@ client.riffy.on(
                                 );
 
                             console.log(
-                                "[TRACK END] Old Now Playing card deleted."
+                                "[TRACK END] NOW PLAYING CARD DELETED"
                             );
                         }
                     }
@@ -1678,32 +1668,28 @@ client.riffy.on(
                 } catch (error) {
 
                     console.error(
-                        "[TRACK END] Error deleting Now Playing card:",
+                        "[TRACK END] Card deletion error:",
                         error
                     );
                 }
-
-                /*
-                 * Remove old card from memory.
-                 */
 
                 nowPlayingMessages.delete(
                     guildId
                 );
             }
 
-            /* =================================================
-               CLEAR OLD TRACK REFERENCES
-            ================================================= */
+            /* =============================================
+               REMOVE OLD CARD FROM TRACK MESSAGE LIST
+            ============================================= */
 
             guildTrackMessages.set(
                 guildId,
                 []
             );
 
-            /* =================================================
-               SEND PERMANENT FINISHED MESSAGE
-            ================================================= */
+            /* =============================================
+               SEND FINISHED MESSAGE
+            ============================================= */
 
             const channel =
                 client.channels.cache.get(
@@ -1713,81 +1699,25 @@ client.riffy.on(
             if (!channel) {
 
                 console.error(
-                    `[TRACK END] Text channel not found: ${player.textChannel}`
+                    "[TRACK END] Text channel not found."
                 );
 
                 return;
             }
 
-            try {
-
-                await channel.send({
-                    content:
-                        `➕ **Finished playing ${title}**`
-                });
-
-                console.log(
-                    `[TRACK END] Finished message sent: ${title}`
-                );
-
-            } catch (error) {
-
-                console.error(
-                    "[TRACK END] Failed to send finished message:",
-                    error
-                );
-            }
-
-            /* =================================================
-               CHECK QUEUE
-            ================================================= */
-
-            const settings =
-                await autoplayCollection
-                    .findOne({
-                        guildId
-                    })
-                    .catch(
-                        () => null
-                    );
-
-            const hasNext =
-                (
-                    player.queue?.length >
-                    0
-                ) ||
-                player.loop === "queue" ||
-                player.loop === "track" ||
-                Boolean(
-                    settings?.autoplay
-                );
+            await channel.send({
+                content:
+                    `➕ **Finished playing ${title}**`
+            });
 
             console.log(
-                `[TRACK END] Has next track: ${hasNext}`
+                `[TRACK END] FINISHED MESSAGE SENT: ${title}`
             );
-
-            /* =================================================
-               CLEANUP WHEN NOTHING IS LEFT
-            ================================================= */
-
-            if (!hasNext) {
-
-                /*
-                 * This is safe because we already removed
-                 * the current Now Playing message and cleared
-                 * guildTrackMessages above.
-                 */
-
-                await cleanupTrackMessages(
-                    client,
-                    player
-                );
-            }
 
         } catch (error) {
 
             console.error(
-                "[TRACK END] Handler error:",
+                "[TRACK END] ERROR:",
                 error
             );
         }
