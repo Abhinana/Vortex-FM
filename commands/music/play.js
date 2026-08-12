@@ -7,11 +7,14 @@ const {
 
 const config = require("../../config.js");
 
-const SpotifyWebApi = require("spotify-web-api-node");
+const SpotifyWebApi =
+    require("spotify-web-api-node");
 
 const {
     getData
-} = require("spotify-url-info")(require("node-fetch"));
+} = require("spotify-url-info")(
+    require("node-fetch")
+);
 
 const {
     sendErrorResponse,
@@ -38,59 +41,101 @@ const {
     getEmoji
 } = require("../../UI/emojis/emoji");
 
+
+/* =========================================================
+   REQUESTERS
+========================================================= */
+
 const requesters = new Map();
+
 
 /* =========================================================
    DURATION
 ========================================================= */
 
 function formatDuration(ms) {
+
     ms = Number(ms) || 0;
 
     if (ms <= 0) {
         return "0s";
     }
 
-    const seconds = Math.floor((ms / 1000) % 60);
-    const minutes = Math.floor((ms / (1000 * 60)) % 60);
-    const hours = Math.floor((ms / (1000 * 60 * 60)) % 24);
+    const seconds =
+        Math.floor(
+            (ms / 1000) % 60
+        );
+
+    const minutes =
+        Math.floor(
+            (ms / (1000 * 60)) % 60
+        );
+
+    const hours =
+        Math.floor(
+            (ms / (1000 * 60 * 60)) % 24
+        );
 
     return [
-        hours > 0 ? `${hours}h` : null,
-        minutes > 0 ? `${minutes}m` : null,
+        hours > 0
+            ? `${hours}h`
+            : null,
+
+        minutes > 0
+            ? `${minutes}m`
+            : null,
+
         `${seconds}s`
     ]
         .filter(Boolean)
         .join(" ");
 }
 
+
 /* =========================================================
    COMMAND
 ========================================================= */
 
-const data = new SlashCommandBuilder()
-    .setName("play")
-    .setDescription("Play a song from a name or link")
-    .addStringOption(option =>
-        option
-            .setName("name")
-            .setDescription("Enter song name / link or playlist")
-            .setRequired(true)
-            .setAutocomplete(true)
-    );
+const data =
+    new SlashCommandBuilder()
+        .setName("play")
+        .setDescription(
+            "Play a song from a name or link"
+        )
+        .addStringOption(option =>
+            option
+                .setName("name")
+                .setDescription(
+                    "Enter song name / link or playlist"
+                )
+                .setRequired(true)
+                .setAutocomplete(true)
+        );
+
 
 /* =========================================================
    SPOTIFY
 ========================================================= */
 
-const spotifyApi = new SpotifyWebApi({
-    clientId: config.spotifyClientId,
-    clientSecret: config.spotifyClientSecret
-});
+const spotifyApi =
+    new SpotifyWebApi({
+        clientId:
+            config.spotifyClientId,
 
-async function getSpotifyPlaylistTracks(playlistId) {
+        clientSecret:
+            config.spotifyClientSecret
+    });
+
+
+async function getSpotifyPlaylistTracks(
+    playlistId
+) {
+
     try {
-        const auth = await spotifyApi.clientCredentialsGrant();
+
+        const auth =
+            await spotifyApi
+                .clientCredentialsGrant();
 
         spotifyApi.setAccessToken(
             auth.body.access_token
@@ -99,45 +144,65 @@ async function getSpotifyPlaylistTracks(playlistId) {
         const tracks = [];
 
         let offset = 0;
+
         const limit = 100;
+
         let total = 0;
 
         do {
+
             const response =
-                await spotifyApi.getPlaylistTracks(
-                    playlistId,
-                    {
-                        limit,
-                        offset
-                    }
-                );
+                await spotifyApi
+                    .getPlaylistTracks(
+                        playlistId,
+                        {
+                            limit,
+                            offset
+                        }
+                    );
 
-            total = response.body.total;
+            total =
+                response.body.total;
 
-            for (const item of response.body.items || []) {
-                const track = item?.track;
+            for (
+                const item
+                of response.body.items || []
+            ) {
+
+                const track =
+                    item?.track;
 
                 if (
                     track &&
                     track.name &&
-                    Array.isArray(track.artists)
+                    Array.isArray(
+                        track.artists
+                    )
                 ) {
+
                     const trackName =
                         `${track.name} - ${track.artists
-                            .map(a => a.name)
+                            .map(
+                                a => a.name
+                            )
                             .join(", ")}`;
 
-                    tracks.push(trackName);
+                    tracks.push(
+                        trackName
+                    );
                 }
             }
 
             offset += limit;
 
-        } while (offset < total);
+        } while (
+            offset < total
+        );
 
         return tracks;
 
     } catch (error) {
+
         console.error(
             "[SPOTIFY] Playlist error:",
             error
@@ -147,18 +212,24 @@ async function getSpotifyPlaylistTracks(playlistId) {
     }
 }
 
+
 /* =========================================================
    SAFE PLAYER START
 ========================================================= */
 
-async function startPlayer(player) {
+async function startPlayer(
+    player
+) {
+
     if (!player) {
+
         throw new Error(
             "Player was not created."
         );
     }
 
     if (player.destroyed) {
+
         throw new Error(
             "Player was destroyed before playback started."
         );
@@ -167,9 +238,7 @@ async function startPlayer(player) {
     /*
      * Riffy handles the actual Lavalink playback.
      *
-     * Do NOT wait for player.connected here.
-     * That property is not a reliable indication of
-     * the voice connection state in this setup.
+     * Do not wait for player.connected here.
      */
 
     if (
@@ -177,6 +246,7 @@ async function startPlayer(player) {
         !player.paused &&
         !player.current
     ) {
+
         console.log(
             "[MUSIC] Starting queued track..."
         );
@@ -187,6 +257,7 @@ async function startPlayer(player) {
     }
 }
 
+
 /* =========================================================
    MODULE
 ========================================================= */
@@ -195,7 +266,10 @@ module.exports = {
 
     data,
 
-    run: async (client, interaction) => {
+    run: async (
+        client,
+        interaction
+    ) => {
 
         try {
 
@@ -203,22 +277,33 @@ module.exports = {
                AUTOCOMPLETE
             ================================================= */
 
-            if (interaction.isAutocomplete()) {
+            if (
+                interaction.isAutocomplete()
+            ) {
 
                 const focusedOption =
-                    interaction.options.getFocused(true);
+                    interaction.options
+                        .getFocused(true);
 
                 if (
-                    focusedOption.name !== "name"
+                    focusedOption.name !==
+                    "name"
                 ) {
-                    return interaction.respond([]);
+
+                    return interaction
+                        .respond([]);
                 }
 
                 const query =
-                    focusedOption.value?.trim() || "";
+                    focusedOption.value
+                        ?.trim() || "";
 
-                if (query.length < 2) {
-                    return interaction.respond([]);
+                if (
+                    query.length < 2
+                ) {
+
+                    return interaction
+                        .respond([]);
                 }
 
                 try {
@@ -227,24 +312,34 @@ module.exports = {
                         getLavalinkManager();
 
                     if (!nodeManager) {
-                        return interaction.respond([]);
+
+                        return interaction
+                            .respond([]);
                     }
 
-                    await nodeManager.ensureNodeAvailable();
+                    await nodeManager
+                        .ensureNodeAvailable();
 
                     const resolve =
-                        await client.riffy.resolve({
-                            query,
-                            requester:
-                                interaction.user.username
-                        });
+                        await client.riffy
+                            .resolve({
+                                query,
+                                requester:
+                                    interaction
+                                        .user
+                                        .username
+                            });
 
                     if (
                         !resolve ||
-                        !Array.isArray(resolve.tracks) ||
+                        !Array.isArray(
+                            resolve.tracks
+                        ) ||
                         resolve.tracks.length === 0
                     ) {
-                        return interaction.respond([]);
+
+                        return interaction
+                            .respond([]);
                     }
 
                     const choices =
@@ -268,20 +363,26 @@ module.exports = {
                                     `${info.title} - ${info.author} (${duration})`;
 
                                 return {
+
                                     name:
                                         display.length > 100
-                                            ? display.substring(0, 97) + "..."
+                                            ? display.substring(
+                                                0,
+                                                97
+                                            ) + "..."
                                             : display,
 
                                     value:
-                                        info.uri || query
+                                        info.uri ||
+                                        query
                                 };
                             })
                             .filter(Boolean);
 
-                    return interaction.respond(
-                        choices
-                    );
+                    return interaction
+                        .respond(
+                            choices
+                        );
 
                 } catch (error) {
 
@@ -290,9 +391,11 @@ module.exports = {
                         error
                     );
 
-                    return interaction.respond([]);
+                    return interaction
+                        .respond([]);
                 }
             }
+
 
             /* =================================================
                LANGUAGE
@@ -306,6 +409,7 @@ module.exports = {
             const t =
                 lang.music.play;
 
+
             /* =================================================
                QUERY
             ================================================= */
@@ -318,6 +422,7 @@ module.exports = {
             if (!query) {
                 return;
             }
+
 
             /* =================================================
                DEFER
@@ -333,8 +438,10 @@ module.exports = {
                 !interaction.deferred &&
                 !interaction.replied
             ) {
+
                 return;
             }
+
 
             /* =================================================
                EXISTING PLAYER
@@ -359,13 +466,16 @@ module.exports = {
                     );
 
                 setTimeout(() => {
+
                     reply
                         .delete()
                         .catch(() => {});
+
                 }, 5000);
 
                 return reply;
             }
+
 
             /* =================================================
                LAVALINK MANAGER
@@ -389,6 +499,7 @@ module.exports = {
                 );
             }
 
+
             try {
 
                 await nodeManager
@@ -407,7 +518,6 @@ module.exports = {
 
                     t.noNodes.title +
                     "\n\n" +
-
                     t.noNodes.message
                         .replace(
                             "{connected}",
@@ -417,14 +527,13 @@ module.exports = {
                             "{total}",
                             totalCount
                         ) +
-
                     "\n" +
-
                     t.noNodes.note,
 
                     5000
                 );
             }
+
 
             /* =================================================
                VOICE CHANNEL
@@ -437,10 +546,13 @@ module.exports = {
 
                 return sendErrorResponse(
                     interaction,
+
                     "❌ You must be in a voice channel.",
+
                     5000
                 );
             }
+
 
             /* =================================================
                DESTROY PLAYER IF DIFFERENT VC
@@ -456,7 +568,9 @@ module.exports = {
 
                     const {
                         cleanupTrackMessages
-                    } = require("../../player.js");
+                    } = require(
+                        "../../player.js"
+                    );
 
                     await cleanupTrackMessages(
                         client,
@@ -477,11 +591,13 @@ module.exports = {
 
                 } catch (_) {}
 
+
                 try {
 
                     existingPlayer.stop();
 
                 } catch (_) {}
+
 
                 await new Promise(
                     resolve =>
@@ -491,11 +607,13 @@ module.exports = {
                         )
                 );
 
+
                 try {
 
                     existingPlayer.destroy();
 
                 } catch (_) {}
+
 
                 await new Promise(
                     resolve =>
@@ -505,6 +623,7 @@ module.exports = {
                         )
                 );
             }
+
 
             /* =================================================
                NODE HEALTH
@@ -518,6 +637,7 @@ module.exports = {
                 .forceConnectAllNodes()
                 .catch(() => {});
 
+
             /* =================================================
                CREATE / GET PLAYER
             ================================================= */
@@ -525,6 +645,7 @@ module.exports = {
             let player = null;
 
             let attempts = 0;
+
             const maxAttempts = 3;
 
             while (
@@ -540,18 +661,20 @@ module.exports = {
                         .ensureNodeAvailable();
 
                     player =
-                        client.riffy.createConnection({
-                            guildId:
-                                interaction.guildId,
+                        client.riffy
+                            .createConnection({
 
-                            voiceChannel:
-                                userVoiceChannel,
+                                guildId:
+                                    interaction.guildId,
 
-                            textChannel:
-                                interaction.channelId,
+                                voiceChannel:
+                                    userVoiceChannel,
 
-                            deaf: true
-                        });
+                                textChannel:
+                                    interaction.channelId,
+
+                                deaf: true
+                            });
 
                 } catch (error) {
 
@@ -565,8 +688,7 @@ module.exports = {
                         error?.message || "";
 
                     if (
-                        attempts <
-                            maxAttempts &&
+                        attempts < maxAttempts &&
                         (
                             msg.includes(
                                 "No nodes are available"
@@ -613,22 +735,26 @@ module.exports = {
 
                         } catch (_) {}
 
+
                         await nodeManager
                             .ensureNodeAvailable();
 
+
                         player =
-                            client.riffy.createConnection({
-                                guildId:
-                                    interaction.guildId,
+                            client.riffy
+                                .createConnection({
 
-                                voiceChannel:
-                                    userVoiceChannel,
+                                    guildId:
+                                        interaction.guildId,
 
-                                textChannel:
-                                    interaction.channelId,
+                                    voiceChannel:
+                                        userVoiceChannel,
 
-                                deaf: true
-                            });
+                                    textChannel:
+                                        interaction.channelId,
+
+                                    deaf: true
+                                });
 
                         break;
                     }
@@ -637,11 +763,14 @@ module.exports = {
                 }
             }
 
+
             if (!player) {
+
                 throw new Error(
                     "Unable to create Riffy player."
                 );
             }
+
 
             /* =================================================
                RESOLVE / QUEUE
@@ -652,6 +781,7 @@ module.exports = {
             let isPlaylist = false;
 
             let queuedTracks = 0;
+
 
             /* =================================================
                SPOTIFY
@@ -668,6 +798,7 @@ module.exports = {
                     const spotifyData =
                         await getData(query);
 
+
                     if (
                         spotifyData.type ===
                         "track"
@@ -675,14 +806,18 @@ module.exports = {
 
                         const trackName =
                             `${spotifyData.name} - ${spotifyData.artists
-                                .map(a => a.name)
+                                .map(
+                                    a => a.name
+                                )
                                 .join(", ")}`;
 
                         tracksToQueue.push(
                             trackName
                         );
 
-                    } else if (
+                    }
+
+                    else if (
                         spotifyData.type ===
                         "playlist"
                     ) {
@@ -697,6 +832,7 @@ module.exports = {
                                 ?.split("?")[0];
 
                         if (!playlistId) {
+
                             throw new Error(
                                 "Invalid Spotify playlist URL."
                             );
@@ -728,336 +864,240 @@ module.exports = {
                     );
                 }
 
-            } else {
-
- /* =================================================
-   NORMAL SEARCH / URL
-================================================= */
-
-let resolve = null;
-
-try {
-
-    /*
-     * First try the original query.
-     *
-     * Supports:
-     * - YouTube URLs
-     * - YouTube searches
-     * - Lavalink-supported URLs
-     * - normal song names
-     */
-
-    resolve = await client.riffy.resolve({
-        query,
-        requester: interaction.user.username
-    });
-
-} catch (error) {
-
-    console.error(
-        "[PLAY] Initial resolve failed:",
-        error?.message || error
-    );
-
-    const msg =
-        error?.message || "";
-
-    if (
-        msg.includes("fetch failed") ||
-        msg.includes("No nodes are available") ||
-        error?.cause?.code === "ECONNREFUSED"
-    ) {
-
-        await nodeManager
-            .reconnectNodesNow?.(5000)
-            .catch(() => {});
-
-        await nodeManager
-            .ensureNodeAvailable();
-
-        resolve = await client.riffy.resolve({
-            query,
-            requester: interaction.user.username
-        });
-
-    } else {
-
-        throw error;
-    }
-}
-
-
-/* =================================================
-   YOUTUBE URL FALLBACK
-================================================= */
-
-const isYouTubeUrl =
-    /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i
-        .test(query);
-
-
-/*
- * If Lavalink could not resolve the YouTube URL,
- * ask YouTube for the video's title and search
- * using that title.
- */
-
-if (
-    isYouTubeUrl &&
-    (
-        !resolve ||
-        !Array.isArray(resolve.tracks) ||
-        resolve.tracks.length === 0
-    )
-) {
-
-    console.log(
-        "[PLAY] Direct YouTube URL failed."
-    );
-
-    console.log(
-        "[PLAY] Trying YouTube title fallback..."
-    );
-
-    try {
-
-        const response = await fetch(
-            `https://www.youtube.com/oembed?url=${encodeURIComponent(query)}&format=json`,
-            {
-                headers: {
-                    "User-Agent":
-                        "Mozilla/5.0"
-                }
             }
-        );
-
-        if (response.ok) {
-
-            const youtubeData =
-                await response.json();
-
-            const youtubeTitle =
-                youtubeData?.title?.trim();
-
-            if (youtubeTitle) {
-
-                console.log(
-                    `[PLAY] YouTube title: ${youtubeTitle}`
-                );
-
-                resolve =
-                    await client.riffy.resolve({
-                        query: youtubeTitle,
-                        requester:
-                            interaction.user.username
-                    });
-            }
-
-        } else {
-
-            console.log(
-                `[PLAY] YouTube oEmbed failed: HTTP ${response.status}`
-            );
-        }
-
-    } catch (error) {
-
-        console.error(
-            "[PLAY] YouTube title fallback failed:",
-            error?.message || error
-        );
-    }
-}
-
-
-/* =================================================
-   VALIDATE RESULT
-================================================= */
-
-if (
-    !resolve ||
-    typeof resolve !== "object" ||
-    !Array.isArray(resolve.tracks)
-) {
-
-    return sendErrorResponse(
-        interaction,
-
-        t.invalidResponse.title +
-        "\n\n" +
-        t.invalidResponse.message +
-        "\n" +
-        t.invalidResponse.note,
-
-        5000
-    );
-}
-
-
-/* =================================================
-   PLAYLIST
-================================================= */
-
-if (
-    resolve.loadType === "playlist"
-) {
-
-    isPlaylist = true;
-
-    for (
-        const track of resolve.tracks
-    ) {
-
-        if (!track?.info) {
-            continue;
-        }
-
-        track.info.requester =
-            interaction.user.username;
-
-        player.queue.add(
-            track
-        );
-
-        if (
-            track.info.uri
-        ) {
-
-            requesters.set(
-                track.info.uri,
-                interaction.user.username
-            );
-        }
-
-        queuedTracks++;
-    }
-}
-
-
-/* =================================================
-   SINGLE TRACK / SEARCH
-================================================= */
-
-else if (
-    resolve.loadType === "search" ||
-    resolve.loadType === "track"
-) {
-
-    const track =
-        resolve.tracks[0];
-
-    if (!track?.info) {
-
-        return sendErrorResponse(
-            interaction,
-
-            t.noResults.title +
-            "\n\n" +
-            t.noResults.message +
-            "\n" +
-            t.noResults.note,
-
-            5000
-        );
-    }
-
-    track.info.requester =
-        interaction.user.username;
-
-    player.queue.add(
-        track
-    );
-
-    if (
-        track.info.uri
-    ) {
-
-        requesters.set(
-            track.info.uri,
-            interaction.user.username
-        );
-    }
-
-    queuedTracks = 1;
-}
-
-
-/* =================================================
-   UNKNOWN LOAD TYPE
-================================================= */
-
-else {
-
-    return sendErrorResponse(
-        interaction,
-
-        t.noResults.title +
-        "\n\n" +
-        t.noResults.message +
-        "\n" +
-        t.noResults.note,
-
-        5000
-    );
-}
 
             /* =================================================
-               SPOTIFY TRACKS / PLAYLIST TRACKS
+               NORMAL SEARCH / URL
             ================================================= */
 
-            const maxTracks = 200;
+            else {
 
-            for (
-                let i = 0;
-                i <
-                    Math.min(
-                        tracksToQueue.length,
-                        maxTracks
-                    );
-                i++
-            ) {
+                let resolve = null;
 
-                const trackQuery =
-                    tracksToQueue[i];
 
-                if (!trackQuery) {
-                    continue;
-                }
+                /* =================================================
+                   FIRST RESOLVE
+                ================================================= */
 
                 try {
 
-                    const resolve =
-                        await client.riffy.resolve({
-                            query:
-                                trackQuery,
+                    resolve =
+                        await client.riffy
+                            .resolve({
+                                query,
+                                requester:
+                                    interaction
+                                        .user
+                                        .username
+                            });
 
-                            requester:
-                                interaction.user.username
-                        });
+                } catch (error) {
+
+                    console.error(
+                        "[PLAY] Initial resolve failed:",
+                        error?.message ||
+                        error
+                    );
+
+                    const msg =
+                        error?.message || "";
+
 
                     if (
-                        resolve &&
-                        Array.isArray(
-                            resolve.tracks
-                        ) &&
-                        resolve.tracks.length >
-                            0
+                        msg.includes(
+                            "fetch failed"
+                        ) ||
+                        msg.includes(
+                            "No nodes are available"
+                        ) ||
+                        error?.cause?.code ===
+                            "ECONNREFUSED"
                     ) {
 
-                        const track =
-                            resolve.tracks[0];
+                        await nodeManager
+                            .reconnectNodesNow?.(
+                                5000
+                            )
+                            .catch(() => {});
 
-                        if (!track?.info) {
+                        await nodeManager
+                            .ensureNodeAvailable();
+
+
+                        resolve =
+                            await client.riffy
+                                .resolve({
+                                    query,
+                                    requester:
+                                        interaction
+                                            .user
+                                            .username
+                                });
+
+                    } else {
+
+                        throw error;
+                    }
+                }
+
+
+                /* =================================================
+                   YOUTUBE URL DETECTION
+                ================================================= */
+
+                const isYouTubeUrl =
+                    /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i
+                        .test(query);
+
+
+                /* =================================================
+                   YOUTUBE URL TITLE FALLBACK
+                ================================================= */
+
+                if (
+                    isYouTubeUrl &&
+                    (
+                        !resolve ||
+                        !Array.isArray(
+                            resolve.tracks
+                        ) ||
+                        resolve.tracks.length === 0
+                    )
+                ) {
+
+                    console.log(
+                        "[PLAY] Direct YouTube URL failed."
+                    );
+
+                    console.log(
+                        "[PLAY] Trying YouTube title fallback..."
+                    );
+
+
+                    try {
+
+                        const response =
+                            await fetch(
+                                `https://www.youtube.com/oembed?url=${encodeURIComponent(query)}&format=json`,
+                                {
+                                    headers: {
+                                        "User-Agent":
+                                            "Mozilla/5.0"
+                                    }
+                                }
+                            );
+
+
+                        if (response.ok) {
+
+                            const youtubeData =
+                                await response.json();
+
+                            const youtubeTitle =
+                                youtubeData
+                                    ?.title
+                                    ?.trim();
+
+
+                            if (youtubeTitle) {
+
+                                console.log(
+                                    `[PLAY] YouTube title: ${youtubeTitle}`
+                                );
+
+
+                                resolve =
+                                    await client.riffy
+                                        .resolve({
+                                            query:
+                                                youtubeTitle,
+
+                                            requester:
+                                                interaction
+                                                    .user
+                                                    .username
+                                        });
+                            }
+
+                        } else {
+
+                            console.log(
+                                `[PLAY] YouTube oEmbed failed: HTTP ${response.status}`
+                            );
+                        }
+
+                    } catch (error) {
+
+                        console.error(
+                            "[PLAY] YouTube title fallback failed:",
+                            error?.message ||
+                            error
+                        );
+                    }
+                }
+
+
+                /* =================================================
+                   VALIDATE RESULT
+                ================================================= */
+
+                if (
+                    !resolve ||
+                    typeof resolve !==
+                        "object" ||
+                    !Array.isArray(
+                        resolve.tracks
+                    )
+                ) {
+
+                    return sendErrorResponse(
+                        interaction,
+
+                        t.invalidResponse.title +
+                        "\n\n" +
+                        t.invalidResponse.message +
+                        "\n" +
+                        t.invalidResponse.note,
+
+                        5000
+                    );
+                }
+
+
+                /* =================================================
+                   PLAYLIST
+                ================================================= */
+
+                if (
+                    resolve.loadType ===
+                    "playlist"
+                ) {
+
+                    isPlaylist = true;
+
+
+                    for (
+                        const track
+                        of resolve.tracks
+                    ) {
+
+                        if (
+                            !track?.info
+                        ) {
                             continue;
                         }
 
+
                         track.info.requester =
-                            interaction.user.username;
+                            interaction
+                                .user
+                                .username;
+
 
                         player.queue.add(
                             track
                         );
+
 
                         if (
                             track.info.uri
@@ -1065,9 +1105,189 @@ else {
 
                             requesters.set(
                                 track.info.uri,
-                                interaction.user.username
+
+                                interaction
+                                    .user
+                                    .username
                             );
                         }
+
+
+                        queuedTracks++;
+                    }
+                }
+
+
+                /* =================================================
+                   SINGLE TRACK / SEARCH
+                ================================================= */
+
+                else if (
+                    resolve.loadType ===
+                        "search" ||
+                    resolve.loadType ===
+                        "track"
+                ) {
+
+                    const track =
+                        resolve.tracks[0];
+
+
+                    if (
+                        !track?.info
+                    ) {
+
+                        return sendErrorResponse(
+                            interaction,
+
+                            t.noResults.title +
+                            "\n\n" +
+                            t.noResults.message +
+                            "\n" +
+                            t.noResults.note,
+
+                            5000
+                        );
+                    }
+
+
+                    track.info.requester =
+                        interaction
+                            .user
+                            .username;
+
+
+                    player.queue.add(
+                        track
+                    );
+
+
+                    if (
+                        track.info.uri
+                    ) {
+
+                        requesters.set(
+                            track.info.uri,
+
+                            interaction
+                                .user
+                                .username
+                        );
+                    }
+
+
+                    queuedTracks = 1;
+                }
+
+
+                /* =================================================
+                   UNKNOWN LOAD TYPE
+                ================================================= */
+
+                else {
+
+                    return sendErrorResponse(
+                        interaction,
+
+                        t.noResults.title +
+                        "\n\n" +
+                        t.noResults.message +
+                        "\n" +
+                        t.noResults.note,
+
+                        5000
+                    );
+                }
+            }
+
+
+            /* =================================================
+               SPOTIFY TRACKS / PLAYLIST TRACKS
+            ================================================= */
+
+            const maxTracks = 200;
+
+
+            for (
+                let i = 0;
+
+                i <
+                Math.min(
+                    tracksToQueue.length,
+                    maxTracks
+                );
+
+                i++
+            ) {
+
+                const trackQuery =
+                    tracksToQueue[i];
+
+
+                if (!trackQuery) {
+                    continue;
+                }
+
+
+                try {
+
+                    const resolve =
+                        await client.riffy
+                            .resolve({
+
+                                query:
+                                    trackQuery,
+
+                                requester:
+                                    interaction
+                                        .user
+                                        .username
+                            });
+
+
+                    if (
+                        resolve &&
+                        Array.isArray(
+                            resolve.tracks
+                        ) &&
+                        resolve.tracks.length > 0
+                    ) {
+
+                        const track =
+                            resolve.tracks[0];
+
+
+                        if (
+                            !track?.info
+                        ) {
+                            continue;
+                        }
+
+
+                        track.info.requester =
+                            interaction
+                                .user
+                                .username;
+
+
+                        player.queue.add(
+                            track
+                        );
+
+
+                        if (
+                            track.info.uri
+                        ) {
+
+                            requesters.set(
+                                track.info.uri,
+
+                                interaction
+                                    .user
+                                    .username
+                            );
+                        }
+
 
                         queuedTracks++;
                     }
@@ -1082,6 +1302,7 @@ else {
                 }
             }
 
+
             if (
                 tracksToQueue.length >
                 maxTracks
@@ -1094,17 +1315,20 @@ else {
                 );
             }
 
+
             /* =================================================
-               IMPORTANT:
-               START PLAYBACK
+               QUEUE DEBUG
             ================================================= */
 
             console.log(
-                `[PLAY] Queue length: ${player.queue?.length || 0}`
+                `[PLAY] Queue length: ${
+                    player.queue?.length || 0
+                }`
             );
 
+
             console.log(
-                `[PLAY] Player state:`,
+                "[PLAY] Player state:",
                 {
                     playing:
                         player.playing,
@@ -1125,12 +1349,10 @@ else {
                 }
             );
 
-            /*
-             * Give Riffy a tiny amount of time to finish
-             * creating the voice connection.
-             *
-             * We DO NOT check player.connected.
-             */
+
+            /* =================================================
+               START PLAYBACK
+            ================================================= */
 
             await new Promise(
                 resolve =>
@@ -1140,9 +1362,11 @@ else {
                     )
             );
 
+
             await startPlayer(
                 player
             );
+
 
             /* =================================================
                SUCCESS MESSAGE
@@ -1152,6 +1376,7 @@ else {
                 isPlaylist
                     ? t.success.titlePlaylist
                     : t.success.titleTrack;
+
 
             const titleIcon =
                 isPlaylist
@@ -1168,6 +1393,7 @@ else {
                         "🎵"
                     );
 
+
             const addedIcon =
                 isPlaylist
                     ? (
@@ -1182,6 +1408,7 @@ else {
                         ) ||
                         "✅"
                     );
+
 
             const statusIcon =
                 player.playing
@@ -1198,6 +1425,7 @@ else {
                         "⏸️"
                     );
 
+
             const statusText =
                 stripLeadingIcons(
                     player.playing
@@ -1205,23 +1433,32 @@ else {
                         : t.success.queueReady
                 );
 
+
             const successContainer =
                 buildPaleCard(
-                    `${titleIcon} ${sanitizeTitle(
-                        successTitle,
-                        "Play"
-                    )}`,
+
+                    `${titleIcon} ${
+                        sanitizeTitle(
+                            successTitle,
+                            "Play"
+                        )
+                    }`,
 
                     [
+
                         `### ${addedIcon} Added\n` +
+
                         (
                             isPlaylist
-                                ? t.success.playlistAdded
+                                ? t.success
+                                    .playlistAdded
                                     .replace(
                                         "{count}",
                                         queuedTracks
                                     )
-                                : t.success.trackAdded
+
+                                : t.success
+                                    .trackAdded
                         ),
 
                         `### ${statusIcon} Status\n` +
@@ -1229,20 +1466,25 @@ else {
                     ]
                 );
 
+
             const message =
                 await interaction.editReply({
+
                     components: [
                         successContainer
                     ],
 
                     flags:
-                        MessageFlags.IsComponentsV2,
+                        MessageFlags
+                            .IsComponentsV2,
 
-                    fetchReply: true
+                    fetchReply:
+                        true
                 });
 
+
             /* =================================================
-               DELETE TEMPORARY MESSAGE
+               DELETE TEMPORARY SUCCESS MESSAGE
             ================================================= */
 
             setTimeout(() => {
@@ -1260,6 +1502,7 @@ else {
                 error
             );
 
+
             const lang =
                 await getLang(
                     interaction.guildId
@@ -1273,13 +1516,18 @@ else {
                     })
                 );
 
+
             const t =
                 lang.music?.play?.errors ||
                 {};
 
+
             return handleCommandError(
+
                 interaction,
+
                 error,
+
                 "play",
 
                 (
