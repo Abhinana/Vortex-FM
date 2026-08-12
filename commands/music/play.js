@@ -730,279 +730,275 @@ module.exports = {
 
             } else {
 
-                /* =================================================
-               NORMAL SEARCH / YOUTUBE URL
-            ================================================= */
+               /* =================================================
+   NORMAL SEARCH / URL
+================================================= */
 
-            let resolve = null;
+let resolve = null;
 
-            /*
-             * Detect YouTube URLs.
-             *
-             * Supports:
-             * https://www.youtube.com/watch?v=XXXX
-             * https://youtu.be/XXXX
-             * https://youtube.com/shorts/XXXX
-             * https://www.youtube.com/live/XXXX
-             */
+try {
 
-            const isYouTubeUrl =
-                /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i
-                    .test(query);
+    /*
+     * First try the original query.
+     *
+     * This supports:
+     * - YouTube URLs
+     * - YouTube searches
+     * - other Lavalink-supported queries
+     */
+    resolve =
+        await client.riffy.resolve({
+            query,
+            requester:
+                interaction.user.username
+        });
+
+} catch (error) {
+
+    console.error(
+        "[PLAY] Initial resolve failed:",
+        error?.message || error
+    );
+
+    const msg =
+        error?.message || "";
+
+    if (
+        msg.includes("fetch failed") ||
+        msg.includes("No nodes are available") ||
+        error?.cause?.code === "ECONNREFUSED"
+    ) {
+
+        await nodeManager
+            .reconnectNodesNow?.(5000)
+            .catch(() => {});
+
+        await nodeManager
+            .ensureNodeAvailable();
+
+        resolve =
+            await client.riffy.resolve({
+                query,
+                requester:
+                    interaction.user.username
+            });
+
+    } else {
+
+        throw error;
+    }
+}
 
 
-            /*
-             * -------------------------------------------------
-             * FIRST ATTEMPT
-             * -------------------------------------------------
-             *
-             * Let Lavalink/Riffy resolve the original query.
-             *
-             * This keeps normal searches and working URLs
-             * exactly as they were.
-             */
+/* =================================================
+   YOUTUBE URL TITLE FALLBACK
+================================================= */
 
-            try {
+const isYouTubeUrl =
+    /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\//i
+        .test(query);
+
+
+if (
+    isYouTubeUrl &&
+    (
+        !resolve ||
+        !Array.isArray(resolve.tracks) ||
+        resolve.tracks.length === 0
+    )
+) {
+
+    console.log(
+        "[PLAY] Direct YouTube URL failed."
+    );
+
+    console.log(
+        "[PLAY] Trying YouTube title fallback..."
+    );
+
+    try {
+
+        const response =
+            await fetch(
+                `https://www.youtube.com/oembed?url=${encodeURIComponent(query)}&format=json`,
+                {
+                    headers: {
+                        "User-Agent":
+                            "Mozilla/5.0"
+                    }
+                }
+            );
+
+        if (response.ok) {
+
+            const data =
+                await response.json();
+
+            const youtubeTitle =
+                data?.title?.trim();
+
+            if (youtubeTitle) {
+
+                console.log(
+                    `[PLAY] YouTube title: ${youtubeTitle}`
+                );
 
                 resolve =
                     await client.riffy.resolve({
-                        query,
+                        query:
+                            youtubeTitle,
+
                         requester:
                             interaction.user.username
                     });
 
-            } catch (error) {
-
-                console.error(
-                    "[PLAY] Initial resolve failed:",
-                    error?.message ||
-                    error
-                );
-
-                const msg =
-                    error?.message || "";
-
-                if (
-                    msg.includes(
-                        "fetch failed"
-                    ) ||
-                    msg.includes(
-                        "No nodes are available"
-                    ) ||
-                    error?.cause?.code ===
-                        "ECONNREFUSED"
-                ) {
-
-                    await nodeManager
-                        .reconnectNodesNow?.(
-                            5000
-                        )
-                        .catch(() => {});
-
-                    await nodeManager
-                        .ensureNodeAvailable();
-
-                    try {
-
-                        resolve =
-                            await client.riffy.resolve({
-                                query,
-                                requester:
-                                    interaction.user.username
-                            });
-
-                    } catch (retryError) {
-
-                        console.error(
-                            "[PLAY] Resolve retry failed:",
-                            retryError?.message ||
-                            retryError
-                        );
-
-                        resolve = null;
-                    }
-                }
             }
 
+        } else {
 
-            /*
-             * -------------------------------------------------
-             * YOUTUBE URL FALLBACK
-             * -------------------------------------------------
-             *
-             * If Lavalink could not resolve the URL directly,
-             * obtain the YouTube video's title and search for
-             * that title instead.
-             *
-             * This is useful when:
-             *
-             *     SONG NAME  -> works
-             *
-             * but:
-             *
-             *     YOUTUBE URL -> No Results
-             */
+            console.log(
+                `[PLAY] YouTube oEmbed failed: HTTP ${response.status}`
+            );
+        }
 
-            if (
-                isYouTubeUrl &&
-                (
-                    !resolve ||
-                    !Array.isArray(
-                        resolve.tracks
-                    ) ||
-                    resolve.tracks.length === 0
-                )
-            ) {
+    } catch (error) {
 
-                console.log(
-                    "[PLAY] YouTube URL could not be resolved directly."
-                );
-
-                console.log(
-                    "[PLAY] Trying YouTube title fallback..."
-                );
+        console.error(
+            "[PLAY] YouTube title fallback failed:",
+            error?.message || error
+        );
+    }
+}
 
 
-                try {
+/* =================================================
+   VALIDATE RESULT
+================================================= */
 
-                    /*
-                     * Use YouTube's public oEmbed endpoint.
-                     *
-                     * No API key is required.
-                     */
+if (
+    !resolve ||
+    typeof resolve !== "object" ||
+    !Array.isArray(resolve.tracks)
+) {
 
-                    const encodedUrl =
-                        encodeURIComponent(
-                            query
-                        );
+    return sendErrorResponse(
+        interaction,
 
-                    const response =
-                        await fetch(
-                            `https://www.youtube.com/oembed?url=${encodedUrl}&format=json`,
-                            {
-                                headers: {
-                                    "User-Agent":
-                                        "Mozilla/5.0"
-                                }
-                            }
-                        );
+        t.invalidResponse.title +
+        "\n\n" +
+        t.invalidResponse.message +
+        "\n" +
+        t.invalidResponse.note,
 
-
-                    if (
-                        response.ok
-                    ) {
-
-                        const data =
-                            await response.json();
+        5000
+    );
+}
 
 
-                        const youtubeTitle =
-                            data?.title?.trim();
+/* =================================================
+   PLAYLIST
+================================================= */
+
+if (
+    resolve.loadType === "playlist"
+) {
+
+    isPlaylist = true;
+
+    for (
+        const track
+        of resolve.tracks
+    ) {
+
+        if (!track?.info) {
+            continue;
+        }
+
+        track.info.requester =
+            interaction.user.username;
+
+        player.queue.add(
+            track
+        );
+
+        if (track.info.uri) {
+
+            requesters.set(
+                track.info.uri,
+                interaction.user.username
+            );
+        }
+
+        queuedTracks++;
+    }
+}
 
 
-                        if (
-                            youtubeTitle
-                        ) {
+/* =================================================
+   SINGLE TRACK / SEARCH
+================================================= */
 
-                            console.log(
-                                `[PLAY] YouTube title found: ${youtubeTitle}`
-                            );
+else if (
+    resolve.loadType === "search" ||
+    resolve.loadType === "track"
+) {
 
+    const track =
+        resolve.tracks[0];
 
-                            /*
-                             * Search the title through Riffy.
-                             *
-                             * This is the same type of query
-                             * that you said works manually.
-                             */
+    if (!track?.info) {
 
-                            resolve =
-                                await client.riffy.resolve({
-                                    query:
-                                        youtubeTitle,
+        return sendErrorResponse(
+            interaction,
 
-                                    requester:
-                                        interaction.user.username
-                                });
+            t.noResults.title +
+            "\n\n" +
+            t.noResults.message +
+            "\n" +
+            t.noResults.note,
 
+            5000
+        );
+    }
 
-                            /*
-                             * If title search works,
-                             * use the result.
-                             */
+    track.info.requester =
+        interaction.user.username;
 
-                            if (
-                                resolve &&
-                                Array.isArray(
-                                    resolve.tracks
-                                ) &&
-                                resolve.tracks.length > 0
-                            ) {
+    player.queue.add(
+        track
+    );
 
-                                console.log(
-                                    `[PLAY] YouTube URL resolved through title search.`
-                                );
+    if (track.info.uri) {
 
-                            } else {
+        requesters.set(
+            track.info.uri,
+            interaction.user.username
+        );
+    }
 
-                                console.log(
-                                    `[PLAY] Title search returned no tracks.`
-                                );
-                            }
+    queuedTracks = 1;
 
-                        } else {
-
-                            console.log(
-                                "[PLAY] YouTube oEmbed returned no title."
-                            );
-                        }
-
-                    } else {
-
-                        console.log(
-                            `[PLAY] YouTube oEmbed HTTP ${response.status}`
-                        );
-                    }
-
-                } catch (fallbackError) {
-
-                    console.error(
-                        "[PLAY] YouTube title fallback failed:",
-                        fallbackError?.message ||
-                        fallbackError
-                    );
-                }
-            }
+}
 
 
-            /*
-             * -------------------------------------------------
-             * FINAL VALIDATION
-             * -------------------------------------------------
-             */
+/* =================================================
+   NO RESULTS
+================================================= */
 
-            if (
-                !resolve ||
-                typeof resolve !==
-                    "object" ||
-                !Array.isArray(
-                    resolve.tracks
-                )
-            ) {
+else {
 
-                return sendErrorResponse(
-                    interaction,
+    return sendErrorResponse(
+        interaction,
 
-                    t.invalidResponse.title +
-                    "\n\n" +
-                    t.invalidResponse.message +
-                    "\n" +
-                    t.invalidResponse.note,
+        t.noResults.title +
+        "\n\n" +
+        t.noResults.message +
+        "\n" +
+        t.noResults.note,
 
-                    5000
-                );
-            }
-
+        5000
+    );
+}
 
             /* =============================================
                PLAYLIST
