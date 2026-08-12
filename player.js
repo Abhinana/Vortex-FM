@@ -1237,26 +1237,11 @@ async function initializePlayer(client) {
             }
 
 
-            /* =================================================
-               REMOVE PREVIOUS NOW PLAYING
-            ================================================= */
+   /* =================================================
+      KEEP PREVIOUS NOW PLAYING MESSAGE
+   ================================================= */
 
-            try {
-
-                await cleanupPreviousTrackMessages(
-                    channel,
-                    guildId
-                );
-
-                await new Promise(
-                    resolve =>
-                        setTimeout(
-                            resolve,
-                            300
-                        )
-                );
-
-            } catch (_) {}
+// Do not delete the previous player message.
 
 
             /* =================================================
@@ -1574,68 +1559,73 @@ async function initializePlayer(client) {
     );
 
 
-    /* ========================================================
-       TRACK END
-    ======================================================== */
+   /* =====================================================
+   TRACK END
+===================================================== */
 
-    client.riffy.on(
-        "trackEnd",
-        async (player) => {
+client.riffy.on(
+    "trackEnd",
+    async (
+        player,
+        track
+    ) => {
 
-            const guildId =
-                player.guildId;
-
-            clearTrackMediaCache(
-                guildId
-            );
-
-            clearProgressUpdates(
-                guildId
-            );
-
-
-            if (client.statusManager) {
-
-                await client.statusManager
-                    .onTrackEnd(guildId)
-                    .catch(() => {});
-            }
-
-
-            const channel =
-                client.channels.cache.get(
-                    player.textChannel
-                );
-
-
-            if (channel) {
-
-                const settings =
-                    await autoplayCollection
-                        .findOne({
-                            guildId
-                        })
-                        .catch(() => null);
-
-
-                const hasNextTrack =
-                    player.queue.length > 0 ||
-                    player.loop === "queue" ||
-                    player.loop === "track" ||
-                    settings?.autoplay;
-
-
-                if (!hasNextTrack) {
-
-                    await cleanupTrackMessages(
-                        client,
-                        player
-                    );
-                }
-            }
+        if (!player?.guildId) {
+            return;
         }
-    );
 
+        const guildId =
+            player.guildId;
+
+        clearProgressUpdates(
+            guildId
+        );
+
+        clearTrackMediaCache(
+            guildId
+        );
+
+        const channel =
+            client.channels.cache.get(
+                player.textChannel
+            );
+
+        if (!channel) {
+            return;
+        }
+
+        /*
+         * IMPORTANT:
+         * Do NOT delete the Now Playing message here.
+         *
+         * The finished-track notification is intentionally
+         * permanent and is NOT sent through sendTemporaryMessage().
+         */
+
+        try {
+
+            const finishedTrack =
+                track ||
+                player.current;
+
+            const title =
+                finishedTrack?.info?.title ||
+                "Unknown Title";
+
+            await channel.send({
+                content:
+                    `➕ **Finished playing ${title}**`
+            });
+
+        } catch (error) {
+
+            console.error(
+                "Finished playing message error:",
+                error
+            );
+        }
+    }
+);
 
     /* ========================================================
        PLAYER DISCONNECT
@@ -1876,56 +1866,20 @@ async function cleanupPreviousTrackMessages(
     guildId
 ) {
 
-    const messages =
-        guildTrackMessages.get(
-            guildId
-        ) || [];
-
-
-    for (const messageInfo of messages) {
-
-        try {
-
-            const fetchChannel =
-                channel.client.channels.cache.get(
-                    messageInfo.channelId
-                );
-
-
-            if (fetchChannel) {
-
-                const message =
-                    await fetchChannel.messages
-                        .fetch(
-                            messageInfo.messageId
-                        )
-                        .catch(() => null);
-
-
-                if (message) {
-
-                    await message
-                        .delete()
-                        .catch(() => {});
-                }
-            }
-
-        } catch (error) {
-
-            console.error(
-                "Error cleaning previous track message:",
-                error.message
-            );
-        }
-    }
-
+    /*
+     * IMPORTANT:
+     *
+     * Do NOT delete the previous Now Playing message.
+     *
+     * This function is intentionally kept so existing calls
+     * elsewhere in player.js do not break.
+     */
 
     guildTrackMessages.set(
         guildId,
         []
     );
 }
-
 
 /* ============================================================
    CLEANUP ALL TRACK MESSAGES
@@ -1949,48 +1903,15 @@ async function cleanupTrackMessages(
     );
 
 
-    const messages =
-        guildTrackMessages.get(
-            guildId
-        ) || [];
-
-
-    for (const messageInfo of messages) {
-
-        try {
-
-            const channel =
-                client.channels.cache.get(
-                    messageInfo.channelId
-                );
-
-
-            if (channel) {
-
-                const message =
-                    await channel.messages
-                        .fetch(
-                            messageInfo.messageId
-                        )
-                        .catch(() => null);
-
-
-                if (message) {
-
-                    await message
-                        .delete()
-                        .catch(() => {});
-                }
-            }
-
-        } catch (error) {
-
-            console.error(
-                "Error cleaning track message:",
-                error.message
-            );
-        }
-    }
+    /*
+     * IMPORTANT:
+     *
+     * DO NOT DELETE DISCORD MESSAGES HERE.
+     *
+     * Previous Now Playing messages and
+     * Finished Playing messages must remain
+     * permanently in the channel.
+     */
 
 
     guildTrackMessages.set(
@@ -2003,7 +1924,6 @@ async function cleanupTrackMessages(
         guildId
     );
 }
-
 
 /* ============================================================
    FORMAT DURATION
