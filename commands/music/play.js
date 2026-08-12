@@ -1,374 +1,460 @@
-const { SlashCommandBuilder, MessageFlags } = require('discord.js');
-const config = require('../../config.js');
-const SpotifyWebApi = require('spotify-web-api-node');
-const { getData } = require('spotify-url-info')(require('node-fetch'));
-const { sendErrorResponse, handleCommandError, safeDeferReply, buildPaleCard, sanitizeTitle, stripLeadingIcons } = require('../../utils/responseHandler.js');
-const { checkVoiceChannel: checkVC } = require('../../utils/voiceChannelCheck.js');
-const { getLavalinkManager } = require('../../lavalink.js');
-const { getLang } = require('../../utils/languageLoader');
-const { getEmoji } = require('../../UI/emojis/emoji');
+const {
+    SlashCommandBuilder,
+    MessageFlags
+} = require("discord.js");
+
+const { getLavalinkManager } = require("../../lavalink.js");
+
+// ============================================================
+// REQUESTER MAP
+// player.js imports this:
+//
+// const { requesters } = require("./commands/music/play");
+// ============================================================
+
 const requesters = new Map();
 
-function formatDuration(ms) {
-    const seconds = Math.floor((ms / 1000) % 60);
-    const minutes = Math.floor((ms / (1000 * 60)) % 60);
-    const hours = Math.floor((ms / (1000 * 60 * 60)) % 24);
 
-    return [
-        hours > 0 ? `${hours}h` : null,
-        minutes > 0 ? `${minutes}m` : null,
-        `${seconds}s`,
-    ]
-        .filter(Boolean)
-        .join(' ');
-}
+// ============================================================
+// COMMAND
+// ============================================================
 
 const data = new SlashCommandBuilder()
-  .setName("play")
-  .setDescription("Play a song from a name or link")
-  .addStringOption(option =>
-    option.setName("name")
-      .setDescription("Enter song name / link or playlist")
-      .setRequired(true)
-      .setAutocomplete(true)
-  );
+    .setName("play")
+    .setDescription("Play a song or add it to the queue.")
+    .addStringOption(option =>
+        option
+            .setName("query")
+            .setDescription("Song name, YouTube URL, Spotify URL, etc.")
+            .setRequired(true)
+    );
 
-const spotifyApi = new SpotifyWebApi({
-    clientId: config.spotifyClientId, 
-    clientSecret: config.spotifyClientSecret,
-});
 
-async function waitForPlayerConnection(player, timeoutMs = 7000) {
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < timeoutMs) {
-        if (player?.connected) {
-            return true;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 150));
+// ============================================================
+// EXECUTE
+// ============================================================
+
+async function execute(interaction) {
+
+    // --------------------------------------------------------
+    // GUILD CHECK
+    // --------------------------------------------------------
+
+    if (!interaction.guild) {
+        return interaction.reply({
+            content: "❌ This command can only be used inside a server.",
+            flags: MessageFlags.Ephemeral
+        });
     }
-    return false;
-}
 
-async function getSpotifyPlaylistTracks(playlistId) {
+
+    // --------------------------------------------------------
+    // VOICE CHANNEL CHECK
+    // --------------------------------------------------------
+
+    const voiceChannel = interaction.member?.voice?.channel;
+
+    if (!voiceChannel) {
+        return interaction.reply({
+            content: "❌ You must join a voice channel first.",
+            flags: MessageFlags.Ephemeral
+        });
+    }
+
+
+    // --------------------------------------------------------
+    // GET QUERY
+    // --------------------------------------------------------
+
+    const query = interaction.options
+        .getString("query", true)
+        .trim();
+
+    if (!query) {
+        return interaction.reply({
+            content: "❌ Please provide a song name or URL.",
+            flags: MessageFlags.Ephemeral
+        });
+    }
+
+
+    // --------------------------------------------------------
+    // DEFER
+    // --------------------------------------------------------
+
+    await interaction.deferReply();
+
+
     try {
-        const data = await spotifyApi.clientCredentialsGrant();
-        spotifyApi.setAccessToken(data.body.access_token);
 
-        let tracks = [];
-        let offset = 0;
-        let limit = 100;
-        let total = 0;
+        // ====================================================
+        // GET LAVALINK MANAGER
+        // ====================================================
 
-        do {
-            const response = await spotifyApi.getPlaylistTracks(playlistId, { limit, offset });
-            total = response.body.total;
-            offset += limit;
+        const nodeManager = getLavalinkManager();
 
-            for (const item of response.body.items) {
-                if (item.track && item.track.name && item.track.artists) {
-                    const trackName = `${item.track.name} - ${item.track.artists.map(a => a.name).join(', ')}`;
-                    tracks.push(trackName);
-                }
-            }
-        } while (tracks.length < total);
+        if (!nodeManager || !nodeManager.riffy) {
 
-        return tracks;
-    } catch (error) {
-        console.error("Error fetching Spotify playlist tracks:", error);
-        return [];
-    }
-}
+            return interaction.editReply({
+                content:
+                    "❌ Lavalink is not ready yet.\n" +
+                    "Please wait a few seconds and try again."
+            });
+        }
 
-module.exports = {
-    data: data,
-    run: async (client, interaction) => {
-        try {
-            // Handle autocomplete
-            if (interaction.isAutocomplete()) {
-                const focusedOption = interaction.options.getFocused(true);
-                if (focusedOption.name === 'name') {
-                    const query = focusedOption.value;
-                    if (query.length < 2) {
-                        return interaction.respond([]);
-                    }
+        const riffy = nodeManager.riffy;
 
-                    try {
-                        const nodeManager = getLavalinkManager();
-                        if (!nodeManager) {
-                            return interaction.respond([]);
-                        }
+        const guildId = interaction.guild.id;
+        const textChannelId = interaction.channel.id;
+        const voiceChannelId = voiceChannel.id;
 
-                        await nodeManager.ensureNodeAvailable();
-                        const resolve = await client.riffy.resolve({ query, requester: interaction.user.username });
 
-                        if (resolve && resolve.tracks && resolve.tracks.length > 0) {
-                            const choices = resolve.tracks.slice(0, 25).map(track => {
-                                const info = track.info;
-                                const duration = formatDuration(info.length);
-                                const display = `${info.title} - ${info.author} (${duration})`;
-                                return {
-                                    name: display.length > 100 ? display.substring(0, 97) + '...' : display,
-                                    value: info.uri || query
-                                };
-                            });
-                            return interaction.respond(choices);
-                        } else {
-                            return interaction.respond([]);
-                        }
-                    } catch (error) {
-                        console.error('Autocomplete error:', error);
-                        return interaction.respond([]);
-                    }
-                }
-            }
+        // ====================================================
+        // GET EXISTING PLAYER
+        // ====================================================
 
-            const lang = await getLang(interaction.guildId);
-            const t = lang.music.play;
+        let player = riffy.players.get(guildId);
 
-            const query = interaction.options.getString('name');
 
-            const deferred = await safeDeferReply(interaction);
+        // ====================================================
+        // CREATE VOICE CONNECTION
+        // ====================================================
 
-            if (!deferred && !interaction.deferred && !interaction.replied) return;
-            const existingPlayer = client.riffy.players.get(interaction.guildId);
-            const voiceCheck = await checkVC(interaction, existingPlayer);
-            if (!voiceCheck.allowed) {
-                const reply = await interaction.editReply(voiceCheck.response);
-                setTimeout(() => reply.delete().catch(() => {}), 5000);
-                return reply;
-            }
+        if (!player || player.destroyed) {
 
-            const nodeManager = getLavalinkManager();
-            if (!nodeManager) {
-                return sendErrorResponse(
-                    interaction,
-                    t.lavalinkManagerError.title + '\n\n' +
-                    t.lavalinkManagerError.message + '\n' +
-                    t.lavalinkManagerError.note,
-                    5000
-                );
-            }
-            
-            try {
-                await nodeManager.ensureNodeAvailable();
-            } catch (error) {
-                const nodeCount = nodeManager.getNodeCount();
-                const totalCount = nodeManager.getTotalNodeCount();
-                return sendErrorResponse(
-                    interaction,
-                    t.noNodes.title + '\n\n' +
-                    t.noNodes.message
-                        .replace('{connected}', nodeCount)
-                        .replace('{total}', totalCount) + '\n' +
-                    t.noNodes.note,
-                    5000
-                );
-            }
-
-            const userVoiceChannel = interaction.member.voice.channelId;
-            
-            if (existingPlayer && existingPlayer.voiceChannel !== userVoiceChannel) {
-                try {
-                    const { cleanupTrackMessages } = require('../../player.js');
-                    await cleanupTrackMessages(client, existingPlayer);
-                    existingPlayer.queue.clear();
-                    existingPlayer.stop();
-                    await new Promise(resolve => setTimeout(resolve, 300));
-                    existingPlayer.destroy();
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                } catch (error) {
-                    console.error('Error destroying old player:', error);
-                    try {
-                        if (!existingPlayer.destroyed) {
-                            existingPlayer.destroy();
-                            await new Promise(resolve => setTimeout(resolve, 500));
-                        }
-                    } catch (e) {}
-                }
-            }
-
-            await nodeManager.checkAllNodesHealth().catch(() => {});
-            await nodeManager.forceConnectAllNodes().catch(() => {});
-            await new Promise(res => setTimeout(res, 400));
-            let player;
-            let attempts = 0;
-            const maxAttempts = 3;
-            while (attempts < maxAttempts) {
-                await nodeManager.ensureNodeAvailable();
-                try {
-                    player = client.riffy.createConnection({
-                        guildId: interaction.guildId,
-                        voiceChannel: userVoiceChannel,
-                        textChannel: interaction.channelId,
-                        deaf: true
-                    });
-                    break;
-                } catch (err) {
-                    attempts++;
-                    const msg = err?.message || '';
-                    if (attempts < maxAttempts && (msg.includes('No nodes are available') || msg.includes('fetch failed'))) {
-                        await nodeManager.reconnectNodesNow?.(5000).catch(() => {});
-                        await nodeManager.ensureNodeAvailable();
-                        await new Promise(res => setTimeout(res, 700));
-                        continue;
-                    }
-                    if (attempts >= maxAttempts) {
-                        await nodeManager.refreshRiffy?.();
-                        await nodeManager.ensureNodeAvailable();
-                        player = client.riffy.createConnection({
-                            guildId: interaction.guildId,
-                            voiceChannel: userVoiceChannel,
-                            textChannel: interaction.channelId,
-                            deaf: true
-                        });
-                        break;
-                    }
-                    throw err;
-                }
-            }
-
-            let tracksToQueue = [];
-            let isPlaylist = false;
-
-            if (query.includes('spotify.com')) {
-                try {
-                    const spotifyData = await getData(query);
-
-                    if (spotifyData.type === 'track') {
-                        const trackName = `${spotifyData.name} - ${spotifyData.artists.map(a => a.name).join(', ')}`;
-                        tracksToQueue.push(trackName);
-                    } else if (spotifyData.type === 'playlist') {
-                        isPlaylist = true;
-                        const playlistId = query.split('/playlist/')[1].split('?')[0]; 
-                        tracksToQueue = await getSpotifyPlaylistTracks(playlistId);
-                    }
-                } catch (err) {
-                    console.error('Error fetching Spotify data:', err);
-                    return sendErrorResponse(
-                        interaction,
-                        t.spotifyError.title + '\n\n' +
-                        t.spotifyError.message + '\n' +
-                        t.spotifyError.note,
-                        5000
-                    );
-                }
-            } else {
-                let resolve;
-                try {
-                    resolve = await client.riffy.resolve({ query, requester: interaction.user.username });
-                } catch (err) {
-                    const msg = err?.message || '';
-                    if (msg.includes('fetch failed') || msg.includes('No nodes are available') || (err.cause && err.cause.code === 'ECONNREFUSED')) {
-                        await nodeManager.reconnectNodesNow?.(5000).catch(() => {});
-                        await nodeManager.ensureNodeAvailable();
-                        resolve = await client.riffy.resolve({ query, requester: interaction.user.username });
-                    } else {
-                        throw err;
-                    }
-                }
-
-                if (!resolve || typeof resolve !== 'object' || !Array.isArray(resolve.tracks)) {
-                    return sendErrorResponse(
-                        interaction,
-                        t.invalidResponse.title + '\n\n' +
-                        t.invalidResponse.message + '\n' +
-                        t.invalidResponse.note,
-                        5000
-                    );
-                }
-
-                if (resolve.loadType === 'playlist') {
-                    isPlaylist = true;
-                    for (const track of resolve.tracks) {
-                        track.info.requester = interaction.user.username;
-                        player.queue.add(track);
-                        requesters.set(track.info.uri, interaction.user.username);
-                    }
-                } else if (resolve.loadType === 'search' || resolve.loadType === 'track') {
-                    const track = resolve.tracks.shift();
-                    track.info.requester = interaction.user.username;
-                    player.queue.add(track);
-                    requesters.set(track.info.uri, interaction.user.username);
-                } else {
-                    return sendErrorResponse(
-                        interaction,
-                        t.noResults.title + '\n\n' +
-                        t.noResults.message + '\n' +
-                        t.noResults.note,
-                        5000
-                    );
-                }
-            }
-
-            let queuedTracks = 0;
-
-            const maxTracks = 200;
-            for (let i = 0; i < Math.min(tracksToQueue.length, maxTracks); i++) {
-                const trackQuery = tracksToQueue[i];
-                try {
-                    const resolve = await client.riffy.resolve({ query: trackQuery, requester: interaction.user.username });
-                    if (resolve && resolve.tracks && resolve.tracks.length > 0) {
-                        const trackInfo = resolve.tracks[0];
-                        player.queue.add(trackInfo);
-                        requesters.set(trackInfo.info.uri, interaction.user.username);
-                        queuedTracks++;
-                    }
-                } catch (error) {
-                    console.error(`Error resolving track ${trackQuery}:`, error);
-                }
-            }
-            
-            if (tracksToQueue.length > maxTracks) {
-                console.warn(`Playlist truncated: ${tracksToQueue.length} tracks requested, only ${maxTracks} queued`);
-            }
-
-            const connected = await waitForPlayerConnection(player);
-            if (!connected) {
-                throw new Error('Voice connection was not established. The bot did not join the voice channel.');
-            }
-
-            if (!player.playing && !player.paused) {
-                player.play();
-            }
-
-            const successTitle = isPlaylist ? t.success.titlePlaylist : t.success.titleTrack;
-            const titleIcon = isPlaylist ? (getEmoji('playlist') || '📚') : (getEmoji('music') || '🎵');
-            const addedIcon = isPlaylist ? (getEmoji('playlist') || '📚') : (getEmoji('success') || '✅');
-            const statusIcon = player.playing ? (getEmoji('play') || '▶️') : (getEmoji('pause') || '⏸️');
-            const statusText = stripLeadingIcons(player.playing ? t.success.nowPlaying : t.success.queueReady);
-            const successContainer = buildPaleCard(
-                `${titleIcon} ${sanitizeTitle(successTitle, 'Play')}`,
-                [
-                    `### ${addedIcon} Added` + '\n' +
-                    (isPlaylist
-                        ? t.success.playlistAdded.replace('{count}', queuedTracks)
-                        : t.success.trackAdded),
-                    `### ${statusIcon} Status` + '\n' +
-                    statusText
-                ]
+            console.log(
+                `[ RIFFY ] Creating player for guild ${guildId}`
             );
 
-            const message = await interaction.editReply({ 
-                components: [successContainer],
-                flags: MessageFlags.IsComponentsV2,
-                fetchReply: true
+            console.log(
+                `[ RIFFY ] Voice channel: ${voiceChannelId}`
+            );
+
+            try {
+
+                player = riffy.createConnection({
+                    guildId: guildId,
+                    voiceChannel: voiceChannelId,
+                    textChannel: textChannelId,
+                    deaf: true
+                });
+
+                console.log(
+                    `[ RIFFY ] Voice connection created: ` +
+                    `${guildId} -> ${voiceChannelId}`
+                );
+
+            } catch (error) {
+
+                console.error(
+                    "[ RIFFY ] Failed to create voice connection:",
+                    error
+                );
+
+                return interaction.editReply({
+                    content:
+                        "❌ Failed to connect to the voice channel.\n\n" +
+                        `\`${error?.message || error}\``
+                });
+            }
+        }
+
+
+        // ====================================================
+        // SAFETY CHECK
+        // ====================================================
+
+        if (!player || player.destroyed) {
+
+            return interaction.editReply({
+                content:
+                    "❌ Riffy could not create the music player."
+            });
+        }
+
+
+        // ====================================================
+        // MAKE SURE PLAYER IS IN THE CORRECT VC
+        // ====================================================
+
+        if (
+            player.voiceChannel &&
+            player.voiceChannel !== voiceChannelId
+        ) {
+
+            return interaction.editReply({
+                content:
+                    "❌ I am already playing music in another voice channel."
+            });
+        }
+
+
+        // ====================================================
+        // RESOLVE TRACK
+        // ====================================================
+
+        console.log(
+            `[ RIFFY ] Resolving: ${query}`
+        );
+
+        let resolve;
+
+        try {
+
+            resolve = await riffy.resolve({
+                query: query,
+                requester: interaction.user.username
             });
 
-            setTimeout(() => {
-                message.delete().catch(() => {}); 
-            }, 3000);
-
         } catch (error) {
-            const lang = await getLang(interaction.guildId).catch(() => ({ music: { play: { errors: {} } } }));
-            const t = lang.music?.play?.errors || {};
-            
-            return handleCommandError(
-                interaction,
-                error,
-                'play',
-                (t.title || '## ❌ Error') + '\n\n' + (t.message || 'An error occurred while processing the request.\nPlease try again later.')
+
+            console.error(
+                "[ RIFFY ] Resolve error:",
+                error
+            );
+
+            return interaction.editReply({
+                content:
+                    "❌ Failed to search for that song.\n\n" +
+                    `\`${error?.message || error}\``
+            });
+        }
+
+
+        // ====================================================
+        // NO RESULTS
+        // ====================================================
+
+        if (
+            !resolve ||
+            !Array.isArray(resolve.tracks) ||
+            resolve.tracks.length === 0
+        ) {
+
+            return interaction.editReply({
+                content:
+                    "❌ No results found for that query."
+            });
+        }
+
+
+        // ====================================================
+        // ADD TRACKS
+        // ====================================================
+
+        let addedTracks = 0;
+
+        // ----------------------------------------------------
+        // PLAYLIST
+        // ----------------------------------------------------
+
+        if (
+            resolve.loadType === "playlist" ||
+            resolve.loadType === "search"
+                ? false
+                : false
+        ) {
+
+            for (const track of resolve.tracks) {
+
+                if (!track?.info) {
+                    continue;
+                }
+
+                track.info.requester =
+                    interaction.user.username;
+
+                player.queue.add(track);
+
+                if (track.info.uri) {
+
+                    requesters.set(
+                        track.info.uri,
+                        interaction.user.username
+                    );
+                }
+
+                addedTracks++;
+            }
+
+        } else {
+
+            // ------------------------------------------------
+            // SINGLE TRACK
+            // ------------------------------------------------
+
+            const track = resolve.tracks[0];
+
+            if (!track?.info) {
+
+                return interaction.editReply({
+                    content:
+                        "❌ Unable to load that track."
+                });
+            }
+
+            track.info.requester =
+                interaction.user.username;
+
+            player.queue.add(track);
+
+            if (track.info.uri) {
+
+                requesters.set(
+                    track.info.uri,
+                    interaction.user.username
+                );
+            }
+
+            addedTracks = 1;
+        }
+
+
+        // ====================================================
+        // MAKE SURE SOMETHING WAS ADDED
+        // ====================================================
+
+        if (addedTracks === 0) {
+
+            return interaction.editReply({
+                content:
+                    "❌ No playable tracks were found."
+            });
+        }
+
+
+        // ====================================================
+        // START PLAYBACK
+        // ====================================================
+
+        if (
+            !player.playing &&
+            !player.paused &&
+            !player.current
+        ) {
+
+            console.log(
+                `[ RIFFY ] Starting playback for guild ${guildId}`
+            );
+
+            try {
+
+                await player.play();
+
+                console.log(
+                    `[ RIFFY ] Playback started: ${guildId}`
+                );
+
+            } catch (error) {
+
+                console.error(
+                    "[ RIFFY ] Playback error:",
+                    error
+                );
+
+                return interaction.editReply({
+                    content:
+                        "❌ The track was added, but playback could not be started.\n\n" +
+                        `\`${error?.message || error}\``
+                });
+            }
+        }
+
+
+        // ====================================================
+        // RESPONSE
+        // ====================================================
+
+        const currentTrack =
+            player.current || player.queue[0];
+
+        if (
+            addedTracks === 1 &&
+            currentTrack?.info
+        ) {
+
+            const title =
+                currentTrack.info.title ||
+                "Unknown Title";
+
+            const author =
+                currentTrack.info.author ||
+                "Unknown Artist";
+
+            const isPlaying =
+                player.current &&
+                player.playing;
+
+            if (isPlaying) {
+
+                await interaction.editReply({
+                    content:
+                        `🎵 **Now playing**\n` +
+                        `**${title}**\n` +
+                        `by ${author}\n\n` +
+                        `👤 Requested by ${interaction.user}`
+                });
+
+            } else {
+
+                await interaction.editReply({
+                    content:
+                        `✅ Added to queue: **${title}**\n` +
+                        `by ${author}`
+                });
+            }
+
+        } else {
+
+            await interaction.editReply({
+                content:
+                    `✅ Added **${addedTracks} tracks** to the queue.`
+            });
+        }
+
+    } catch (error) {
+
+        console.error(
+            "[ PLAY COMMAND ] Unexpected error:",
+            error
+        );
+
+        try {
+
+            if (interaction.deferred) {
+
+                await interaction.editReply({
+                    content:
+                        "❌ Something went wrong while trying to play the song.\n\n" +
+                        `\`${error?.message || error}\``
+                });
+
+            } else {
+
+                await interaction.reply({
+                    content:
+                        "❌ Something went wrong while trying to play the song.",
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+
+        } catch (replyError) {
+
+            console.error(
+                "[ PLAY COMMAND ] Failed to send error response:",
+                replyError
             );
         }
-    },
-    requesters: requesters,
+    }
+}
+
+
+// ============================================================
+// EXPORTS
+// ============================================================
+
+module.exports = {
+    data,
+    execute,
+    requesters
 };
