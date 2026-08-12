@@ -1570,195 +1570,181 @@ client.riffy.on(
     );
 
 
-  /* =====================================================
+ /* ============================================================
    TRACK END
-===================================================== */
+============================================================ */
 
 client.riffy.on(
     "trackEnd",
-    async (player) => {
+    async (player, track) => {
 
-        if (!player?.guildId) {
-            return;
-        }
+        try {
 
-
-        const guildId =
-            player.guildId;
-
-
-        /* =================================================
-           GET FINISHED TRACK
-        ================================================= */
-
-        const finishedTrack =
-            finishedTrackInfo.get(
-                guildId
-            );
-
-
-        const title =
-            finishedTrack?.info?.title ||
-            "Unknown Title";
-
-
-        /* =================================================
-           STOP PROGRESS UPDATES
-        ================================================= */
-
-        clearProgressUpdates(
-            guildId
-        );
-
-        clearTrackMediaCache(
-            guildId
-        );
-
-
-        /* =================================================
-           FIND DISCORD CHANNEL
-        ================================================= */
-
-        const channel =
-            client.channels.cache.get(
-                player.textChannel
-            );
-
-
-        if (!channel) {
-            return;
-        }
-
-
-        /* =================================================
-           DELETE ONLY THE CURRENT NOW PLAYING CARD
-        ================================================= */
-
-        const nowPlayingMessage =
-            nowPlayingMessages.get(
-                guildId
-            );
-
-
-        if (
-            nowPlayingMessage
-        ) {
-
-            try {
-
-                await nowPlayingMessage
-                    .delete();
-
+            if (!player || !player.guildId) {
                 console.log(
-                    `[ LAVALINK ] Deleted Now Playing message for ${guildId}`
+                    "[TRACK END] Invalid player."
+                );
+                return;
+            }
+
+            const guildId =
+                player.guildId;
+
+            console.log(
+                `[TRACK END] Fired for guild ${guildId}`
+            );
+
+            /*
+             * ------------------------------------------------
+             * GET THE TRACK THAT JUST FINISHED
+             * ------------------------------------------------
+             */
+
+            const finishedTrack =
+                track ||
+                player.current;
+
+            const title =
+                finishedTrack?.info?.title ||
+                "Unknown Title";
+
+            console.log(
+                `[TRACK END] Finished: ${title}`
+            );
+
+            /*
+             * ------------------------------------------------
+             * STOP PROGRESS UPDATES
+             * ------------------------------------------------
+             */
+
+            clearProgressUpdates(
+                guildId
+            );
+
+            clearTrackMediaCache(
+                guildId
+            );
+
+            /*
+             * ------------------------------------------------
+             * DELETE ONLY THE CURRENT NOW PLAYING CARD
+             * ------------------------------------------------
+             */
+
+            const nowPlayingInfo =
+                nowPlayingMessages.get(
+                    guildId
                 );
 
-            } catch (error) {
+            if (nowPlayingInfo) {
 
-                console.error(
-                    "[ LAVALINK ] Could not delete Now Playing message:",
-                    error.message
+                try {
+
+                    const channel =
+                        client.channels.cache.get(
+                            nowPlayingInfo.channelId
+                        );
+
+                    if (channel) {
+
+                        const message =
+                            await channel.messages
+                                .fetch(
+                                    nowPlayingInfo.messageId
+                                )
+                                .catch(
+                                    () => null
+                                );
+
+                        if (message) {
+
+                            await message
+                                .delete()
+                                .catch(
+                                    error => {
+
+                                        console.error(
+                                            "[TRACK END] Failed to delete Now Playing card:",
+                                            error?.message ||
+                                            error
+                                        );
+
+                                    }
+                                );
+
+                            console.log(
+                                "[TRACK END] Old Now Playing card deleted."
+                            );
+                        }
+                    }
+
+                } catch (error) {
+
+                    console.error(
+                        "[TRACK END] Error deleting Now Playing card:",
+                        error
+                    );
+                }
+
+                /*
+                 * Remove it from memory.
+                 */
+
+                nowPlayingMessages.delete(
+                    guildId
                 );
             }
 
+            /*
+             * ------------------------------------------------
+             * ALSO CLEAR OLD TRACK MESSAGE REFERENCES
+             * ------------------------------------------------
+             */
 
-            nowPlayingMessages.delete(
-                guildId
+            guildTrackMessages.set(
+                guildId,
+                []
+            );
+
+            /*
+             * ------------------------------------------------
+             * SEND PERMANENT FINISHED MESSAGE
+             * ------------------------------------------------
+             */
+
+            const channel =
+                client.channels.cache.get(
+                    player.textChannel
+                );
+
+            if (!channel) {
+
+                console.error(
+                    `[TRACK END] Text channel not found: ${player.textChannel}`
+                );
+
+                return;
+            }
+
+            await channel.send({
+                content:
+                    `➕ **Finished playing ${title}**`
+            });
+
+            console.log(
+                `[TRACK END] Finished message sent: ${title}`
+            );
+
+        } catch (error) {
+
+            console.error(
+                "[TRACK END] Handler error:",
+                error
             );
         }
-
-
-        /* =================================================
-           ALSO CLEAN TRACK MESSAGE REFERENCES
-           WITHOUT DELETING FINISHED MESSAGES
-        ================================================= */
-
-        guildTrackMessages.set(
-            guildId,
-            []
-        );
-
-
-       /* =================================================
-   FINISHED PLAYING MESSAGE
-================================================= */
-
-let youtubeUrl = null;
-
-if (
-    finishedTrack?.info?.uri &&
-    (
-        finishedTrack.info.uri.includes("youtube.com") ||
-        finishedTrack.info.uri.includes("youtu.be")
-    )
-) {
-
-    youtubeUrl =
-        finishedTrack.info.uri;
-
-} else if (
-    finishedTrack?.info?.identifier
-) {
-
-    youtubeUrl =
-        `https://www.youtube.com/watch?v=${finishedTrack.info.identifier}`;
-}
-
-
-/*
- * Make the finished song title clickable.
- */
-
-const finishedTitle =
-    youtubeUrl
-        ? `[${title}](${youtubeUrl})`
-        : title;
-
-
-/*
- * Components V2 container.
- *
- * setAccentColor() creates the colored
- * vertical border on the left.
- */
-
-const finishedContainer =
-    new ContainerBuilder()
-        .setAccentColor(
-            0x2B8CFF
-        )
-        .addTextDisplayComponents(
-            text =>
-                text.setContent(
-                    `➕ Finished playing ${finishedTitle}`
-                )
-        );
-
-
-try {
-
-    await channel.send({
-
-        components: [
-            finishedContainer
-        ],
-
-        flags:
-            MessageFlags.IsComponentsV2
-
-    });
-
-    console.log(
-        `[ LAVALINK ] Finished playing: ${title}`
-    );
-
-} catch (error) {
-
-    console.error(
-        "[ LAVALINK ] Failed to send finished message:",
-        error
-    );
-}
+    }
+);
 
         /* =================================================
            CHECK QUEUE
